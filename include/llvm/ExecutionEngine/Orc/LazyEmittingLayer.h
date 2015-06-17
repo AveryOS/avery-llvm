@@ -123,7 +123,7 @@ private:
   protected:
 
     const GlobalValue* searchGVs(StringRef Name,
-                                 bool ExportedSymbolsOnly) const override {
+                                 bool ExportedSymbolsOnly) const {
       // FIXME: We could clean all this up if we had a way to reliably demangle
       //        names: We could just demangle name and search, rather than
       //        mangling everything else.
