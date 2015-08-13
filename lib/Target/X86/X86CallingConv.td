@@ -350,6 +350,11 @@ def CC_X86_64_HHVM_C : CallingConv<[
   CCDelegateTo<CC_X86_64_C>
 ]>;
 
+def CC_X86_64_Sandbox : CallingConv<[
+  CCIfType<[i64], CCAssignToReg<[RBX, RDI, RSI, RDX, RCX, R8 , R9 ]>>,
+  CCDelegateTo<CC_X86_64_C>
+]>;
+
 // Calling convention used on Win64
 def CC_X86_Win64_C : CallingConv<[
   // FIXME: Handle byval stuff.
@@ -773,6 +778,7 @@ def CC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::AnyReg", CCDelegateTo<CC_X86_64_AnyReg>>,
   CCIfCC<"CallingConv::X86_64_Win64", CCDelegateTo<CC_X86_Win64_C>>,
   CCIfCC<"CallingConv::X86_64_SysV", CCDelegateTo<CC_X86_64_C>>,
+  CCIfCC<"CallingConv::Sandbox", CCDelegateTo<CC_X86_64_Sandbox>>,
   CCIfCC<"CallingConv::X86_VectorCall", CCDelegateTo<CC_X86_Win64_VectorCall>>,
   CCIfCC<"CallingConv::HHVM", CCDelegateTo<CC_X86_64_HHVM>>,
   CCIfCC<"CallingConv::HHVM_C", CCDelegateTo<CC_X86_64_HHVM_C>>,

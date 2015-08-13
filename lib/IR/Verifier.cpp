@@ -3109,8 +3109,11 @@ void Verifier::verifyDominatesUse(Instruction &I, unsigned i) {
     if (II->getNormalDest() == II->getUnwindDest())
       return;
   }
-
   const Use &U = I.getOperandUse(i);
+  if(!(InstsInThisBlock.count(Op) || DT.dominates(Op, U))) {
+      llvm::errs() << "DUMP";
+      I.getParent()->getParent()->getParent()->dump();
+  }
   Assert(InstsInThisBlock.count(Op) || DT.dominates(Op, U),
          "Instruction does not dominate all uses!", Op, &I);
 }

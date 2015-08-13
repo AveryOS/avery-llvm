@@ -172,6 +172,9 @@ static inline uint32_t scaleBranchCount(uint64_t Count, uint64_t Scale) {
   return Scaled;
 }
 
+ModulePass *createAugmentArgsPass();
+FunctionPass *createMemMaskPass();
+
 } // End llvm namespace
 
 #endif

@@ -242,6 +242,8 @@ void initializeRegionPrinterPass(PassRegistry&);
 void initializeRegionViewerPass(PassRegistry&);
 void initializeRewriteStatepointsForGCPass(PassRegistry&);
 void initializeSafeStackPass(PassRegistry&);
+void initializeAugmentArgsPass(PassRegistry&);
+void initializeMemMaskPass(PassRegistry&);
 void initializeSCCPPass(PassRegistry&);
 void initializeSROALegacyPassPass(PassRegistry&);
 void initializeSROA_DTPass(PassRegistry&);
