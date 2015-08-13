@@ -10,6 +10,7 @@ add_llvm_library(LLVMInstrumentation
   SafeStack.cpp
   SanitizerCoverage.cpp
   ThreadSanitizer.cpp
+  MemMask.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms
