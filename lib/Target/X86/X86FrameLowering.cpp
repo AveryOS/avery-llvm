@@ -1876,10 +1876,16 @@ bool X86FrameLowering::spillCalleeSavedRegisters(
 
     if (!X86::GR64RegClass.contains(Reg) && !X86::GR32RegClass.contains(Reg))
       continue;
-    // Add the callee-saved register as live-in. It's killed at the spill.
-    MBB.addLiveIn(Reg);
 
-    BuildMI(MBB, MI, DL, TII.get(Opc)).addReg(Reg, RegState::Kill)
+    auto IsLive = MBB.isLiveIn(Reg);
+
+    if (!IsLive) {
+      // Add the callee-saved register as live-in. It's killed at the spill.
+      MBB.addLiveIn(Reg);
+    }
+
+    // Kill the register if it wasn't live previously.
+    BuildMI(MBB, MI, DL, TII.get(Opc)).addReg(Reg, IsLive ? 0 : RegState::Kill)
       .setMIFlag(MachineInstr::FrameSetup);
   }
 
