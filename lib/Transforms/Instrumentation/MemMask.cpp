@@ -33,99 +33,6 @@ using namespace llvm;
 
 namespace {
 
-/// Check whether a given alloca instruction (AI) should be put on the safe
-/// stack or not. The function analyzes all uses of AI and checks whether it is
-/// only accessed in a memory safe way (as decided statically).
-bool IsSafeStackAlloca(const AllocaInst *AI) {
-  // Go through all uses of this alloca and check whether all accesses to the
-  // allocated object are statically known to be memory safe and, hence, the
-  // object can be placed on the safe stack.
-
-  SmallPtrSet<const Value *, 16> Visited;
-  SmallVector<const Instruction *, 8> WorkList;
-  WorkList.push_back(AI);
-
-  // A DFS search through all uses of the alloca in bitcasts/PHI/GEPs/etc.
-  while (!WorkList.empty()) {
-    const Instruction *V = WorkList.pop_back_val();
-    for (const Use &UI : V->uses()) {
-      auto I = cast<const Instruction>(UI.getUser());
-      assert(V == UI.get());
-
-      switch (I->getOpcode()) {
-      case Instruction::Load:
-        // Loading from a pointer is safe.
-        break;
-      case Instruction::VAArg:
-        // "va-arg" from a pointer is safe.
-        break;
-      case Instruction::Store:
-        if (V == I->getOperand(0))
-          // Stored the pointer - conservatively assume it may be unsafe.
-          return false;
-        // Storing to the pointee is safe.
-        break;
-
-      case Instruction::GetElementPtr:
-        if (!cast<const GetElementPtrInst>(I)->hasAllConstantIndices())
-          // GEP with non-constant indices can lead to memory errors.
-          // This also applies to inbounds GEPs, as the inbounds attribute
-          // represents an assumption that the address is in bounds, rather than
-          // an assertion that it is.
-          return false;
-
-        // We assume that GEP on static alloca with constant indices is safe,
-        // otherwise a compiler would detect it and warn during compilation.
-
-        if (!isa<const ConstantInt>(AI->getArraySize()))
-          // However, if the array size itself is not constant, the access
-          // might still be unsafe at runtime.
-          return false;
-
-      /* fallthrough */
-
-      case Instruction::BitCast:
-      case Instruction::IntToPtr:
-      case Instruction::PHI:
-      case Instruction::PtrToInt:
-      case Instruction::Select:
-        // The object can be safe or not, depending on how the result of the
-        // instruction is used.
-        if (Visited.insert(I).second)
-          WorkList.push_back(cast<const Instruction>(I));
-        break;
-
-      case Instruction::Call:
-      case Instruction::Invoke: {
-        // FIXME: add support for memset and memcpy intrinsics.
-        ImmutableCallSite CS(I);
-
-        // LLVM 'nocapture' attribute is only set for arguments whose address
-        // is not stored, passed around, or used in any other non-trivial way.
-        // We assume that passing a pointer to an object as a 'nocapture'
-        // argument is safe.
-        // FIXME: a more precise solution would require an interprocedural
-        // analysis here, which would look at all uses of an argument inside
-        // the function being called.
-        ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
-        for (ImmutableCallSite::arg_iterator A = B; A != E; ++A)
-          if (A->get() == V && !CS.doesNotCapture(A - B))
-            // The parameter is not marked 'nocapture' - unsafe.
-            return false;
-        continue;
-      }
-
-      default:
-        // The object is unsafe if it is used in any other way.
-        return false;
-      }
-    }
-  }
-
-  // All uses of the alloca are safe, we can place it on the safe stack.
-  return true;
-}
-
 Function *RecreateFunction(Function *Func, FunctionType *NewType) {
   Function *NewFunc = Function::Create(NewType, Func->getLinkage());
   //NewFunc->copyAttributesFrom(Func);
@@ -134,6 +41,9 @@ Function *RecreateFunction(Function *Func, FunctionType *NewType) {
   NewFunc->getBasicBlockList().splice(NewFunc->begin(),
                                       Func->getBasicBlockList());
 
+  if (Func->hasPersonalityFn()) {
+    NewFunc->setPersonalityFn(Func->getPersonalityFn());
+  }
 
   AttributeSet Attrs = Func->getAttributes();
   AttributeSet FnAttrs = Attrs.getFnAttributes();
@@ -179,7 +89,7 @@ class AugmentArgs : public ModulePass {
   void protectFunction(Function &F, Value *Mask);
   bool safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset);
   void protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask);
-  void protectValue(Function &F, DenseSet<Value *> &prot, Value *Ptr, Value *Mask, bool CanOffset);
+  void protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset);
 };
 
 struct Info {
@@ -195,87 +105,91 @@ bool AugmentArgs::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8
   if (prot.count(I)) {
     return true;
   } else if (auto GEP = dyn_cast<GetElementPtrInst>(I)) {
-      if (!CanOffset) {
+    if (!CanOffset) {
+      return false;
+    }
+    APInt aoffset(DL->getPointerSizeInBits(), 0);
+    if (!GEP->accumulateConstantOffset(*DL, aoffset)) {
         return false;
-      }
-      APInt aoffset(DL->getPointerSizeInBits(), 0);
-      if (!GEP->accumulateConstantOffset(*DL, aoffset)) {
-          return false;
-      }
-      offset += aoffset.getSExtValue();
+    }
+    offset += aoffset.getSExtValue();
 
-      if (offset + size >= GuardSize || offset <= -GuardSize) {
-          return false;
-      }
-
-      if (safePtr(GEP->getPointerOperand(), prot, phis, offset, size, target, CanOffset)) {
-          prot.insert(I);
-          return true;
-      }
-  } else if (auto BC = dyn_cast<BitCastInst>(I)) {
-      auto Src = BC->getSrcTy();
-      if (Src->isPointerTy()) {
-        if (safePtr(BC->getOperand(0), prot, phis, offset, size, target, CanOffset)) {
-            return true;
-        }
-      }
-  } else if (auto PN = dyn_cast<PHINode>(I)) {
-      if (!phis.insert(PN).second) {
+    if (offset + size >= GuardSize || offset <= -GuardSize) {
         return false;
-      }
-      unsigned SafeVals = 0;
-      for (Value *val: PN->incoming_values()) {
-        Value *PTarget;
-        if (safePtr(val, prot, phis, offset, size, PTarget, CanOffset)) {
-            SafeVals++;
-        }
-      }
-      if (PN->getNumIncomingValues() == SafeVals) {
-        llvm::errs() << "OPT PHI REF in " << Func->getName() << " ";
-          I->dump();
-        llvm::errs() << "\n";
+    }
+
+    if (safePtr(GEP->getPointerOperand(), prot, phis, offset, size, target, CanOffset)) {
         prot.insert(I);
         return true;
+    }
+  } else if (auto BC = dyn_cast<BitCastInst>(I)) {
+    auto Src = BC->getSrcTy();
+    if (Src->isPointerTy()) {
+      if (safePtr(BC->getOperand(0), prot, phis, offset, size, target, CanOffset)) {
+          return true;
       }
-      if (PN->getNumIncomingValues() - SafeVals <= 1) {
-        llvm::errs() << "SAFE PHI REF in " << Func->getName() << " ";
-          I->dump();
-        llvm::errs() << "\n";
-      }
+    }
+  } else if (auto PN = dyn_cast<PHINode>(I)) {
+    if (!phis.insert(PN).second) {
       return false;
-  } else if (auto A = dyn_cast<Argument>(I)) {
-      return false;//A->getArgNo() == 1;
-  } else if (dyn_cast<ConstantPointerNull>(I)) {
-      return true;
-  } else if (auto AI = dyn_cast<AllocaInst>(I)) { // References to the stack are safe
-      /*if (IsSafeStackAlloca(AI)) {
-
-        llvm::errs() << "ALLOCA REF in " << Func->getName() << " ";
-          I->dump();
-        llvm::errs() << "\n";/*FUNC\n";
-          Func->dump();
-        llvm::errs() << "/ALLOCA\n";
+    }
+    unsigned SafeVals = 0;
+    Value *UnsafeRef = nullptr;
+    for (Value *val: PN->incoming_values()) {
+      Value *PTarget;
+      if (safePtr(val, prot, phis, offset, size, PTarget, CanOffset)) {
+          SafeVals++;
       } else {
-        llvm::errs() << "UNSAFE ALLOCA REF in " << Func->getName() << " ";
-          I->dump();
-        llvm::errs() << "\n";
+        UnsafeRef = PTarget;
+      }
+    }
+    if (PN->getNumIncomingValues() == SafeVals) {
+      prot.insert(I);
+      return true;
+    }
+    if (PN->getNumIncomingValues() - SafeVals <= 1) {
+      llvm::errs() << "SAFE PHI REF in " << Func->getName() << " ";
+        I->dump();
+      llvm::errs() << "\n";
+      //target = UnsafeRef;
+      return false;
+    }
+    return false;
+  } else if (auto A = dyn_cast<Argument>(I)) {
+    return false;//A->getArgNo() == 1;
+  } else if (dyn_cast<ConstantPointerNull>(I)) {
+    return true;
+  } else if (auto AI = dyn_cast<AllocaInst>(I)) { // References to the stack are safe
+    /*if (IsSafeStackAlloca(AI)) {
 
-      }*/
-      return true;
+      llvm::errs() << "ALLOCA REF in " << Func->getName() << " ";
+        I->dump();
+      llvm::errs() << "\n";/*FUNC\n";
+        Func->dump();
+      llvm::errs() << "/ALLOCA\n";
+    } else {
+      llvm::errs() << "UNSAFE ALLOCA REF in " << Func->getName() << " ";
+        I->dump();
+      llvm::errs() << "\n";
+
+    }*/
+    return true;
   } else if (isa<GlobalValue>(I)) {
-      return true;
+    return true;
+  } else if (isa<InvokeInst>(I)) {
+    // We cannot insert protection instructions after an InvokeInst,
+    // so we require that results are already protected.
+    return true;
   } else if (isa<CallInst>(I)) {
-       /* llvm::errs() << "SAFE CALL REF in " << Func->getName() << " ";
-          I->dump();
-        llvm::errs() << "\n";*/
-      return true;
+    return true;
   }
   return false;
 }
 
-void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Value *Ptr, Value *Mask, bool CanOffset) {
+void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
   IRBuilder<> IRB(F.getEntryBlock().getFirstInsertionPt());
 
+  Value *Ptr = PtrUse.get();
   Value *Target;
   auto MemType = Ptr->getType()->getPointerElementType();
   SmallSet<Value *, 8> phis;
@@ -293,14 +207,11 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Value *Ptr,
     IRB.SetInsertPoint(it);
   }
 
-/*    ArrayRef<Type *> ArgType(Target->getType());
-  ArrayRef<Value *> Arg(Target);
-  auto Asm = InlineAsm::get(FunctionType::get(Target->getType(), ArgType, false), "andq %r15, $0", "=rm,0,~{dirflag},~{fpsr},~{flags}", false);
-  auto MaskedPtr = IRB.CreateCall(Asm, Arg);*/
-
   auto PtrVal = IRB.CreatePtrToInt(Target, IntPtrTy);
-  auto MaskedVal = IRB.CreateAnd(PtrVal, Mask); //0xBADF00D // 128GB space - 0x1FFFFFFFFF // 0xBFFFFFFFFFFFFFFF
+  auto MaskedVal = IRB.CreateAnd(PtrVal, Mask);
   auto MaskedPtr = IRB.CreateIntToPtr(MaskedVal, Target->getType());
+
+  bool UpdatedAll = true;
 
   auto UI = Target->use_begin(), E = Target->use_end(); // TODO: Pass Use& to this function and ensure it gets updated
   for (; UI != E;) {
@@ -308,21 +219,24 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Value *Ptr,
     ++UI;
     if (PtrVal == U.getUser())
       continue;
-    if (isa<Constant>(U.getUser())) {
-    llvm::errs() << "CONSTANT in " << F.getName() << "\n";
-      U.getUser()->dump();
-    llvm::errs() << "DURING PROT OF \n";
-      Ptr->dump();
-    llvm::errs() << "END\n";
 
+    // We can't handle constants. Users can be outside the function
+    if (isa<Constant>(U.getUser())) {
+      llvm::errs() << "CONSTANT in " << F.getName() << "\n";
+        U.getUser()->dump();
+      llvm::errs() << "DURING PROT OF \n";
+        Ptr->dump();
+      llvm::errs() << "END\n";
+      UpdatedAll = false;
+      continue;
     }
+
     assert(!dyn_cast<Constant>(U.getUser()));
 
     // Limit changes to the current function
     if (auto I = dyn_cast<Instruction>(U.getUser())) {
       if (I->getParent()->getParent() == &F) {
         U.set(MaskedPtr);
-
       }
     }
    /*if (auto *C = dyn_cast<Constant>(U.getUser())) {
@@ -333,11 +247,15 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Value *Ptr,
    }*/
   }
 
-  prot.insert(MaskedPtr);
+  if (UpdatedAll) {
+    prot.insert(Ptr);
+  } else {
+    prot.insert(MaskedPtr);
+  }
 }
 
 void AugmentArgs::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
-  protectValue(F, prot, I->getOperand(PtrOp), Mask, true); // getOperandUse
+  protectValue(F, prot, I->getOperandUse(PtrOp), Mask, true);
   IRBuilder<> IRB(I);
 /*
       auto SegPtrVal = IRB.CreatePtrToInt(I.i->getOperand(I.ptr), IntPtrTy);
@@ -362,9 +280,9 @@ void AugmentArgs::protectFunction(Function &F, Value *Mask) {
       } else if (auto AI = dyn_cast<AtomicCmpXchgInst>(I)) {
         protectValueAndSeg(F, prot, I, AI->getPointerOperandIndex(), Mask);
       } else if (auto RI = dyn_cast<ReturnInst>(I)) {
-          auto Arg = RI->getReturnValue(); //getArgOperandUse
+          auto Arg = RI->getReturnValue();
           if (Arg && Arg->getType()->isPointerTy())
-            protectValue(F, prot, Arg, Mask, false);
+            protectValue(F, prot, RI->getOperandUse(0), Mask, false);
       } else if (auto CI = dyn_cast<CallInst>(I)) {
        /* for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
           auto Arg = CI->getArgOperand(i); //getArgOperandUse
@@ -427,7 +345,59 @@ bool AugmentArgs::runOnModule(Module &M) {
       for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
         Instruction &I = *(Iter++);
 
-        if (auto OldCall = dyn_cast<CallInst>(&I)) {
+        if (auto OldCall = dyn_cast<InvokeInst>(&I)) {
+          FunctionType *CallFTy = cast<FunctionType>(
+              OldCall->getCalledValue()->getType()->getPointerElementType());
+
+          SmallVector<Type *, 8> ArgTypes;
+          ArgTypes.push_back(IntPtrTy);
+          for (auto Type : CallFTy->params()) {
+            ArgTypes.push_back(Type);
+          }
+          auto NCallFTy = FunctionType::get(CallFTy->getReturnType(), ArgTypes, CallFTy->isVarArg());
+
+          SmallVector<Value *, 8> Args;
+          Args.push_back(Mask);
+          for (unsigned I = 0; I < OldCall->getNumArgOperands(); ++I) {
+            Value *Arg = OldCall->getArgOperand(I);
+            Args.push_back(Arg);
+          }
+
+          auto CastFunc = new BitCastInst(OldCall->getCalledValue(), NCallFTy->getPointerTo(),
+                                      OldCall->getName() + ".arg_cast", OldCall);
+          CastFunc->setDebugLoc(OldCall->getDebugLoc());
+          InvokeInst *NewCall = InvokeInst::Create(CastFunc, OldCall->getNormalDest(), OldCall->getUnwindDest(), Args, "", OldCall);
+          NewCall->setDebugLoc(OldCall->getDebugLoc());
+          NewCall->takeName(OldCall);
+          NewCall->setCallingConv(CallingConv::Sandbox);
+
+
+          AttributeSet Attrs = OldCall->getAttributes();
+          AttributeSet NAttrs = NewCall->getAttributes();
+          AttributeSet FnAttrs = Attrs.getFnAttributes();
+          NAttrs.addAttributes(NF.getContext(), AttributeSet::FunctionIndex, FnAttrs);
+          NAttrs.addAttributes(NF.getContext(), AttributeSet::ReturnIndex, Attrs.getRetAttributes());
+
+          // We need to recreate the attribute set, with the right indexes
+          for (unsigned i = 1, j = 2; i < NewCall->getNumArgOperands()+1; i++, j++) {
+            if (!Attrs.hasAttributes(i)) continue;
+            AttributeSet ParamAttrs = Attrs.getParamAttributes(i);
+            AttrBuilder AB;
+            unsigned NumSlots = ParamAttrs.getNumSlots();
+            for (unsigned k = 0; k < NumSlots; k++) {
+              for (AttributeSet::iterator I = ParamAttrs.begin(k), E = ParamAttrs.end(k); I != E; I++) {
+                AB.addAttribute(*I);
+              }
+            }
+            NAttrs.addAttributes(NF.getContext(), j, AttributeSet::get(NF.getContext(), j, AB));
+          }
+
+          NewCall->setAttributes(NAttrs);
+
+
+          OldCall->replaceAllUsesWith(NewCall);
+          OldCall->eraseFromParent();
+        } else if (auto OldCall = dyn_cast<CallInst>(&I)) {
           if (isa<IntrinsicInst>(OldCall))
             continue;
 
@@ -465,7 +435,6 @@ bool AugmentArgs::runOnModule(Module &M) {
           NAttrs.addAttributes(NF.getContext(), AttributeSet::ReturnIndex, Attrs.getRetAttributes());
 
           // We need to recreate the attribute set, with the right indexes
-          AttributeSet NewAttrs;
           for (unsigned i = 1, j = 2; i < NewCall->getNumArgOperands()+1; i++, j++) {
             if (!Attrs.hasAttributes(i)) continue;
             AttributeSet ParamAttrs = Attrs.getParamAttributes(i);
