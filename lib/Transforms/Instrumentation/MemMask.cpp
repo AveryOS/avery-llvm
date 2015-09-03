@@ -6,6 +6,8 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -26,6 +28,7 @@
 #include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <sstream>
 
 using namespace llvm;
 
@@ -148,18 +151,15 @@ bool AugmentArgs::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8
       return true;
     }
     if (PN->getNumIncomingValues() - SafeVals <= 1) {
-      llvm::errs() << "SAFE PHI REF in " << Func->getName() << " ";
-        I->dump();
-      llvm::errs() << "\n";
-      //target = UnsafeRef;
+      target = UnsafeRef; // COMMENT OUT TO NOT FOLLOW PHIS
       return false;
     }
     return false;
-  } else if (auto A = dyn_cast<Argument>(I)) {
+  } else if (dyn_cast<Argument>(I)) {
     return false;//A->getArgNo() == 1;
   } else if (dyn_cast<ConstantPointerNull>(I)) {
     return true;
-  } else if (auto AI = dyn_cast<AllocaInst>(I)) { // References to the stack are safe
+  } else if (dyn_cast<AllocaInst>(I)) { // References to the stack are safe
     /*if (IsSafeStackAlloca(AI)) {
 
       llvm::errs() << "ALLOCA REF in " << Func->getName() << " ";
@@ -185,7 +185,27 @@ bool AugmentArgs::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8
   }
   return false;
 }
+/*
+void UpdateConstantUse(Function &F, Constant *C, Value *From, Value *To) {
+  for (Use &U : C->uses()) {
+    Constant *UC = dyn_cast<Constant>(U.getUser());
 
+    if (!UC) {
+      auto I = dyn_cast<Instruction>(CU->getUser());
+      assert(I);
+
+      if (I->getParent()->getParent() == &F) {
+        C->handleOperandChange(From, To, CU); // Need a copy of the Constant
+      }
+    }
+
+    if (isa<GlobalValue>(UC))
+      return;
+
+    UpdateConstantUse(D, UC, From, To);
+  }
+}
+*/
 void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
   IRBuilder<> IRB(F.getEntryBlock().getFirstInsertionPt());
 
@@ -196,6 +216,12 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
 
   if (safePtr(Ptr, prot, phis, 0, CanOffset ? DL->getTypeAllocSize(MemType) : 0, Target, CanOffset))
     return;
+
+  // TODO: If Target is a Constant, call safeConstantPtr which has a map of Constants to protected values
+  // If a safe one is found, recreate the instructions required to get the constant,
+  //    <- this requires runtime instructions, another AND might be just as fast
+  //    <- bitcasts would be free
+  // Add Target -> MaskedPtr to the constant map
 
   if (auto TI = dyn_cast<Instruction>(Target)) {
     // Insert it after the instruction generating the pointer
@@ -209,9 +235,7 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
 
   auto PtrVal = IRB.CreatePtrToInt(Target, IntPtrTy);
   auto MaskedVal = IRB.CreateAnd(PtrVal, Mask);
-  auto MaskedPtr = IRB.CreateIntToPtr(MaskedVal, Target->getType());
-
-  bool UpdatedAll = true;
+  auto MaskedPtr = IRB.CreateIntToPtr(MaskedVal, Target->getType(), "P_" + Target->getName());
 
   auto UI = Target->use_begin(), E = Target->use_end(); // TODO: Pass Use& to this function and ensure it gets updated
   for (; UI != E;) {
@@ -220,24 +244,35 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
     if (PtrVal == U.getUser())
       continue;
 
-    // We can't handle constants. Users can be outside the function
-    if (isa<Constant>(U.getUser())) {
+    // We can't handle constants. Users can be outside the function.
+    // safePtr cannot look into constant, since we can't replace uses of them.
+    if (auto C = dyn_cast<Constant>(U.getUser())) {
       llvm::errs() << "CONSTANT in " << F.getName() << "\n";
+        C->dump();
+      llvm::errs() << "DURING PROT OF \n";
+        Ptr->dump();
+      llvm::errs() << "END\n";
+/*
+      auto CU = ConstantUse(C);
+      assert(CU);
+      auto I = dyn_cast<Instruction>(CU->getUser());
+      assert(I);
+
+      if (I->getParent()->getParent() == &F) {
+        C->handleOperandChange(Target, MaskedPtr, CU);
+      }*/
+      continue;
+    } else if (auto I = dyn_cast<Instruction>(U.getUser())) {
+      if (I->getParent()->getParent() == &F) {
+        U.set(MaskedPtr);
+      }
+    } else {
+      llvm::errs() << "UNKNOWN USER in " << F.getName() << "\n";
         U.getUser()->dump();
       llvm::errs() << "DURING PROT OF \n";
         Ptr->dump();
       llvm::errs() << "END\n";
-      UpdatedAll = false;
-      continue;
-    }
-
-    assert(!dyn_cast<Constant>(U.getUser()));
-
-    // Limit changes to the current function
-    if (auto I = dyn_cast<Instruction>(U.getUser())) {
-      if (I->getParent()->getParent() == &F) {
-        U.set(MaskedPtr);
-      }
+      assert(0);
     }
    /*if (auto *C = dyn_cast<Constant>(U.getUser())) {
      if (!isa<GlobalValue>(C)) {
@@ -247,11 +282,7 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
    }*/
   }
 
-  if (UpdatedAll) {
-    prot.insert(Ptr);
-  } else {
-    prot.insert(MaskedPtr);
-  }
+  prot.insert(MaskedPtr);
 }
 
 void AugmentArgs::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
@@ -283,7 +314,8 @@ void AugmentArgs::protectFunction(Function &F, Value *Mask) {
           auto Arg = RI->getReturnValue();
           if (Arg && Arg->getType()->isPointerTy())
             protectValue(F, prot, RI->getOperandUse(0), Mask, false);
-      } else if (auto CI = dyn_cast<CallInst>(I)) {
+      } else if (dyn_cast<InvokeInst>(I)) {
+      } else if (dyn_cast<CallInst>(I)) {
        /* for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
           auto Arg = CI->getArgOperand(i); //getArgOperandUse
           if (Arg->getType()->isPointerTy())//i == 1 && 
@@ -477,6 +509,64 @@ bool AugmentArgs::runOnModule(Module &M) {
   return true;
 }
 
+struct Range {
+  bool Bottom;
+  bool Unknown;
+  int64_t RelStart;
+  int64_t RelEnd;
+
+  static Range bottom() {
+    Range r;
+    r.Bottom = true;
+    r.Unknown = false;
+    return r;
+  }
+
+  static Range unknown() {
+    Range r;
+    r.Unknown = true;
+    r.Bottom = false;
+    return r;
+  }
+
+  static Range exact() {
+    Range r;
+    r.Unknown = false;
+    r.Bottom = false;
+    r.RelStart = 0;
+    r.RelEnd = 0;
+    return r;
+  }
+
+  std::string str() {
+    if (Bottom) {
+      return "B";
+    } else if (Unknown) {
+      return "U";
+    } else {
+      std::stringstream s;
+      s << "[" << RelStart << ", " << RelEnd << "]";
+      return s.str();
+    }
+  }
+
+  Range offset(int64_t o) {
+    Range r = *this;
+    r.RelStart += o;
+    r.RelEnd += o;
+    return r;
+  }
+};
+
+bool operator!=(const Range& lhs, const Range& rhs) {
+  if (lhs.Bottom != rhs.Bottom)
+    return true;
+  if (lhs.Unknown != rhs.Unknown)
+    return true;
+  if (lhs.Unknown || lhs.Bottom)
+    return false;
+  return lhs.RelStart != rhs.RelStart || lhs.RelEnd != rhs.RelEnd;
+}
 
 class MemMask : public FunctionPass {
   const DataLayout *DL;
@@ -485,17 +575,19 @@ class MemMask : public FunctionPass {
   Type *IntPtrTy;
   Type *Int32Ty;
   Type *Int8Ty;
-
+  Value *Mask;
 
 
 public:
+  typedef DenseMap<Value *, Range> State;
+
   static char ID; // Pass identification, replacement for typeid.
   MemMask() : FunctionPass(ID), DL(nullptr) {
     initializeMemMaskPass(*PassRegistry::getPassRegistry());
   }
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    //AU.addRequired<AliasAnalysis>();
+    AU.addRequired<LoopInfoWrapperPass>();
   }
 
 
@@ -513,9 +605,187 @@ public:
 
   bool runOnFunction(Function &F);
 
+private:
+  State ExecuteI(const State &InState, Instruction *I);
+  State ExecuteB(const State &InState, BasicBlock *BB);
+  State Join(const State &A, State &B);
+
+
 }; // class SafeStack
 
+Range GetRange(const MemMask::State &S, Value *V) {
+   auto it = S.find(V);
+   if (it == S.end()) {
+     return Range::bottom();
+   } else {
+     return (*it).getSecond();
+   }
+}
+
+Range JoinRange(const Range &A, const Range &B) {
+  if (A.Bottom || B.Bottom) {
+    return Range::bottom();
+  }
+  if (A.Unknown) {
+    return B;
+  }
+  if (B.Unknown) {
+    return A;
+  }
+  Range r = A;
+  r.RelStart = std::min(A.RelStart, B.RelStart);
+  r.RelEnd = std::max(A.RelEnd, B.RelEnd);
+  return r;
+}
+
+MemMask::State MemMask::ExecuteI(const State &InState, Instruction *I) {
+  State R = InState;
+
+  if (auto C = dyn_cast<CastInst>(I)) {
+    if (C->isNoopCast(*DL)) {
+      R[C] = R[C->getOperand(0)];
+    }
+  } else if (auto C = dyn_cast<BinaryOperator>(I)) {
+    if (C->getOperand(1) == Mask) {
+      R[C] = Range::exact();
+    }
+  } else if (auto GEP = dyn_cast<GetElementPtrInst>(I)) {
+    APInt aoffset(DL->getPointerSizeInBits(), 0);
+    if (GEP->accumulateConstantOffset(*DL, aoffset)) {
+      auto PtrR = GetRange(R, GEP->getPointerOperand());
+      int64_t offset = aoffset.getSExtValue();
+      R[GEP] = PtrR.offset(offset);
+    }
+  } else if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
+    unsigned Ptr = isa<LoadInst>(I) ? 0 : 1;
+    auto Val = I->getOperand(Ptr);
+    auto MemType = Val->getType()->getPointerElementType();
+    Range r = Range::exact(); ;
+    r.RelEnd -= DL->getTypeAllocSize(MemType) - 1;
+    //R[Val] = r;
+  } else if (auto PN = dyn_cast<PHINode>(I)) {
+    for (Value *val: PN->incoming_values()) {
+      R[PN] = JoinRange(R[PN], GetRange(R, val));
+    }
+  }
+
+  return R;
+}
+
+MemMask::State MemMask::ExecuteB(const State &InState, BasicBlock *BB) {
+  State r = InState;
+  for (auto &I: *BB) {
+    r = ExecuteI(r, &I);
+  }
+  return r;
+}
+
+MemMask::State MemMask::Join(const MemMask::State &A, MemMask::State &B) {
+  State R = A;
+  for (auto &v: R) {
+    v.getSecond() = JoinRange(v.getSecond(), B[v.getFirst()]);
+  }
+  return R;
+}
+
+bool Diff(MemMask::State &A, MemMask::State &B) {
+  for (auto &v: A) {
+    if (v.getSecond() != B[v.getFirst()])
+      return true;
+  }
+  return false;
+}
+
+void Dump(MemMask::State S) {
+  for (auto &v: S) {
+    if (v.getFirst()->hasName()) {
+      llvm::errs() << "  %" << v.getFirst()->getName() << " has value " << v.getSecond().str() << "\n";
+    } else {
+      v.getFirst()->dump();
+      llvm::errs() << "    has value " << v.getSecond().str() << "\n";
+    }
+  }
+}
+
 bool MemMask::runOnFunction(Function &F) {
+  Mask = &*F.arg_begin();
+  //LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+
+  State unknown;
+
+  for (auto &A: F.args()) {
+    unknown.insert(std::pair<Value *, Range>(&A, Range::exact()));
+  }
+
+
+  for (auto &BB: F) {
+    for (auto &I: BB) {
+      if (!I.getType()->isVoidTy())
+        unknown.insert(std::pair<Value *, Range>(&I, Range::unknown()));
+    }
+  }
+
+  std::vector<BasicBlock *> WorkList;
+
+  DenseMap<BasicBlock *, State> InMap;
+  DenseMap<BasicBlock *, State> OutMap;
+
+  for (auto &BB: F) {
+    WorkList.push_back(&BB);
+    InMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
+    OutMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
+  }
+
+  //WorkList.push_back(&F.getEntryBlock());
+
+  //llvm::errs() << "DURING ANALYSIS OF " << F.getName() << "\n";
+
+  while (!WorkList.empty()) {
+    BasicBlock *BB = WorkList.back();
+    WorkList.pop_back();
+
+    State OldIn = InMap[BB];
+    State OldOut = OutMap[BB];
+
+    State In = unknown;
+
+    for (auto it = pred_begin(BB), et = pred_end(BB); it != et; ++it) {
+      In = Join(In, OutMap[*it]);
+    }
+/*
+    llvm::errs() << "\nInBLOCK " << BB->getName() << "\n";
+    Dump(In);
+*/
+    State Out = ExecuteB(In, BB);
+/*
+    llvm::errs() << "OutBLOCK " << BB->getName() << "\n";
+    Dump(Out);
+*/
+    if (Diff(In, OldIn) || Diff(Out, OldOut)) {
+      InMap[BB] = In;
+      OutMap[BB] = Out;
+
+      for (auto it = succ_begin(BB), et = succ_end(BB); it != et; ++it) {
+        if (std::find(WorkList.begin(), WorkList.end(), *it) == WorkList.end()) {
+          //llvm::errs() << "Adding " << (*it)->getName() << "\n";
+          WorkList.push_back(*it);
+        }
+      }
+    }
+  }
+
+  llvm::errs() << "ANALYSIS OF " << F.getName() << "\n";
+
+  for (auto &BB: F) {
+    State In = InMap[&BB];
+    State Out = OutMap[&BB];
+    llvm::errs() << "\nInBLOCK " << BB.getName() << "\n";
+    Dump(In);
+    BB.dump();
+    llvm::errs() << "OutBLOCK " << BB.getName() << "\n";
+    Dump(Out);
+  }
+
   return true;
 }
 
@@ -524,7 +794,7 @@ bool MemMask::runOnFunction(Function &F) {
 char MemMask::ID = 0;
 INITIALIZE_PASS_BEGIN(MemMask, "mem-mask",
                       "mem-mask instrumentation pass", false, false)
-INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(AugmentArgs)
 INITIALIZE_PASS_END(MemMask, "mem-mask", "mem-mask instrumentation pass",
                     false, false)
 
