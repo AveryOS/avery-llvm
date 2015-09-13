@@ -510,14 +510,14 @@ bool AugmentArgs::runOnModule(Module &M) {
 }
 
 struct Range {
-  bool Bottom;
   bool Unknown;
   int64_t RelStart;
   int64_t RelEnd;
 
   static Range bottom() {
     Range r;
-    r.Bottom = true;
+    r.RelStart = INT64_MIN;
+    r.RelEnd = INT64_MAX;
     r.Unknown = false;
     return r;
   }
@@ -525,45 +525,111 @@ struct Range {
   static Range unknown() {
     Range r;
     r.Unknown = true;
-    r.Bottom = false;
     return r;
   }
 
   static Range exact() {
     Range r;
     r.Unknown = false;
-    r.Bottom = false;
     r.RelStart = 0;
     r.RelEnd = 0;
     return r;
   }
 
+  static std::string num(int64_t n) {
+    std::stringstream s;
+    if (n == INT64_MIN) {
+      s << "-∞";
+    } else if (n == INT64_MAX) {
+      s << "+∞";
+    } else {
+      s << n;
+    }
+    return s.str();
+  }
+
+  bool allowed() {
+    if (Unknown) {
+      return false;
+    } else {
+      return (RelStart > -512 && RelStart <= 0) && (RelEnd < 512 && RelEnd >= 0);
+    }
+  }
+
   std::string str() {
-    if (Bottom) {
-      return "B";
-    } else if (Unknown) {
-      return "U";
+    if (Unknown) {
+      return "⊥";
     } else {
       std::stringstream s;
-      s << "[" << RelStart << ", " << RelEnd << "]";
+      s << "[" << num(RelStart) << ", " << num(RelEnd) << "]";
       return s.str();
     }
   }
 
+  static int64_t offset(int64_t base, int64_t offset) {
+    // base - offset where base is RelStart should return -INF if oob
+    // base + offset where base is RelEnd should return INF if oob
+
+    if (base == INT64_MIN || base == INT64_MAX) {
+      return base;
+    }
+
+    const int64_t bound = 20000;
+
+    if (offset > bound) {
+      return INT64_MAX;
+    }
+    if (offset < -bound) {
+      return INT64_MIN;
+    }
+
+    int64_t n = base + offset;
+
+    if (n < -bound) {
+      return INT64_MIN;
+    }
+
+    if (n > bound) {
+      return INT64_MAX;
+    }
+    if (n < -bound) {
+      return INT64_MIN;
+    }
+
+    return n;
+  }
+
   Range offset(int64_t o) {
     Range r = *this;
-    r.RelStart += o;
-    r.RelEnd += o;
+
+    r.RelStart = offset(r.RelStart, o);
+    r.RelEnd = offset(r.RelEnd, o);
+    return r;
+  }
+
+  Range widen(Range old) {
+    Range r = old;
+
+    if (old.Unknown) {
+      return *this;
+    }
+
+    if (RelStart < old.RelStart) {
+      r.RelStart = INT64_MIN;
+    }
+
+    if (RelEnd > old.RelEnd) {
+      r.RelEnd = INT64_MAX;
+    }
+
     return r;
   }
 };
 
 bool operator!=(const Range& lhs, const Range& rhs) {
-  if (lhs.Bottom != rhs.Bottom)
-    return true;
   if (lhs.Unknown != rhs.Unknown)
     return true;
-  if (lhs.Unknown || lhs.Bottom)
+  if (lhs.Unknown)
     return false;
   return lhs.RelStart != rhs.RelStart || lhs.RelEnd != rhs.RelEnd;
 }
@@ -623,9 +689,6 @@ Range GetRange(const MemMask::State &S, Value *V) {
 }
 
 Range JoinRange(const Range &A, const Range &B) {
-  if (A.Bottom || B.Bottom) {
-    return Range::bottom();
-  }
   if (A.Unknown) {
     return B;
   }
@@ -646,7 +709,7 @@ MemMask::State MemMask::ExecuteI(const State &InState, Instruction *I) {
       R[C] = R[C->getOperand(0)];
     }
   } else if (auto C = dyn_cast<BinaryOperator>(I)) {
-    if (C->getOperand(1) == Mask) {
+    if (C->getOperand(1) == Mask) { // AND with [0, 0] is always valid. A special MASK value is not needed
       R[C] = Range::exact();
     }
   } else if (auto GEP = dyn_cast<GetElementPtrInst>(I)) {
@@ -713,6 +776,8 @@ bool MemMask::runOnFunction(Function &F) {
 
   State unknown;
 
+  bool debug = false;
+
   for (auto &A: F.args()) {
     unknown.insert(std::pair<Value *, Range>(&A, Range::exact()));
   }
@@ -731,14 +796,15 @@ bool MemMask::runOnFunction(Function &F) {
   DenseMap<BasicBlock *, State> OutMap;
 
   for (auto &BB: F) {
-    WorkList.push_back(&BB);
+    WorkList.insert(WorkList.begin(), &BB);
     InMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
     OutMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
   }
 
   //WorkList.push_back(&F.getEntryBlock());
 
-  //llvm::errs() << "DURING ANALYSIS OF " << F.getName() << "\n";
+  if (debug)
+    llvm::errs() << "DURING ANALYSIS OF " << F.getName() << "\n";
 
   while (!WorkList.empty()) {
     BasicBlock *BB = WorkList.back();
@@ -752,16 +818,24 @@ bool MemMask::runOnFunction(Function &F) {
     for (auto it = pred_begin(BB), et = pred_end(BB); it != et; ++it) {
       In = Join(In, OutMap[*it]);
     }
-/*
+
+  if (debug){
     llvm::errs() << "\nInBLOCK " << BB->getName() << "\n";
-    Dump(In);
-*/
+    Dump(In); }
+
     State Out = ExecuteB(In, BB);
-/*
+
+    if (debug){
     llvm::errs() << "OutBLOCK " << BB->getName() << "\n";
-    Dump(Out);
-*/
+    Dump(Out);}
+
     if (Diff(In, OldIn) || Diff(Out, OldOut)) {
+      if (debug){
+      llvm::errs() << "ChangedBLOCK " << BB->getName() << "\n";}
+
+      if (debug && Diff(Out, OldOut) && !Diff(In, OldIn)){
+      llvm::errs() << "OUTPUT CHANGED BUT INPUT DIDN'T " << BB->getName() << "\n";}
+
       InMap[BB] = In;
       OutMap[BB] = Out;
 
@@ -781,10 +855,51 @@ bool MemMask::runOnFunction(Function &F) {
     State Out = OutMap[&BB];
     llvm::errs() << "\nInBLOCK " << BB.getName() << "\n";
     Dump(In);
+
     BB.dump();
+
     llvm::errs() << "OutBLOCK " << BB.getName() << "\n";
     Dump(Out);
   }
+
+  for (auto &BB: F) {
+    State In = InMap[&BB];
+
+    State SI = In;
+
+    for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
+      Instruction *I = Iter++;
+
+      if (auto C = dyn_cast<BinaryOperator>(I)) {
+        if (C->getOperand(1) == Mask) {
+          Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
+          Value *BasePtr = PtrToInt->getOperand(0);
+
+          if (GetRange(SI, BasePtr).allowed()) {
+            Instruction *IntToPtr = Iter++; // Skip IntToPtr instruction;
+
+            llvm::errs() << "\nRemoving CHECK ";
+            C->dump();
+            llvm::errs() << "\n";
+
+            IntToPtr->replaceAllUsesWith(BasePtr);
+
+            IntToPtr->eraseFromParent();
+            C->eraseFromParent();
+            PtrToInt->eraseFromParent();
+
+            continue;
+          }
+        }
+      }
+
+
+      SI = ExecuteI(SI, I);
+    }
+  }
+
+  llvm::errs() << "OptFunc " << F.getName() << "\n";
+  F.dump();
 
   return true;
 }
