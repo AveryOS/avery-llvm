@@ -77,6 +77,171 @@ Function *RecreateFunction(Function *Func, FunctionType *NewType) {
   return NewFunc;
 }
 
+struct Range {
+  bool Unknown;
+  int64_t RelStart;
+  int64_t RelEnd;
+
+  static Range bottom() {
+    Range r;
+    r.RelStart = INT64_MIN;
+    r.RelEnd = INT64_MAX;
+    r.Unknown = false;
+    return r;
+  }
+
+  static Range unknown() {
+    Range r;
+    r.Unknown = true;
+    return r;
+  }
+
+  static Range exact() {
+    Range r;
+    r.Unknown = false;
+    r.RelStart = 0;
+    r.RelEnd = 0;
+    return r;
+  }
+
+  static std::string num(int64_t n) {
+    std::stringstream s;
+    if (n == INT64_MIN) {
+      s << "-∞";
+    } else if (n == INT64_MAX) {
+      s << "+∞";
+    } else {
+      s << n;
+    }
+    return s.str();
+  }
+
+  bool allowed() {
+    if (Unknown) {
+      return false;
+    } else {
+      return (RelStart > -512 && RelStart <= 0) && (RelEnd < 512 && RelEnd >= 0);
+    }
+  }
+
+  std::string str() {
+    if (Unknown) {
+      return "⊥";
+    } else {
+      std::stringstream s;
+      s << "[" << num(RelStart) << ", " << num(RelEnd) << "]";
+      return s.str();
+    }
+  }
+
+  static int64_t offset(int64_t base, int64_t offset) {
+    // base - offset where base is RelStart should return -INF if oob
+    // base + offset where base is RelEnd should return INF if oob
+
+    if (base == INT64_MIN || base == INT64_MAX) {
+      return base;
+    }
+
+    const int64_t bound = 20000;
+
+    if (offset > bound) {
+      return INT64_MAX;
+    }
+    if (offset < -bound) {
+      return INT64_MIN;
+    }
+
+    int64_t n = base + offset;
+
+    if (n < -bound) {
+      return INT64_MIN;
+    }
+
+    if (n > bound) {
+      return INT64_MAX;
+    }
+    if (n < -bound) {
+      return INT64_MIN;
+    }
+
+    return n;
+  }
+
+  Range offset(int64_t o) {
+    Range r = *this;
+
+    r.RelStart = offset(r.RelStart, o);
+    r.RelEnd = offset(r.RelEnd, o);
+    return r;
+  }
+
+  Range widen(Range old) {
+    Range r = old;
+
+    if (old.Unknown) {
+      return *this;
+    }
+
+    if (RelStart < old.RelStart) {
+      r.RelStart = INT64_MIN;
+    }
+
+    if (RelEnd > old.RelEnd) {
+      r.RelEnd = INT64_MAX;
+    }
+
+    return r;
+  }
+};
+
+class MemMask : public FunctionPass {
+  const DataLayout *DL;
+
+  Type *StackPtrTy;
+  Type *IntPtrTy;
+  Type *Int32Ty;
+  Type *Int8Ty;
+  Value *Mask;
+
+
+public:
+  typedef DenseMap<Value *, Range> State;
+
+  static char ID; // Pass identification, replacement for typeid.
+  MemMask() : FunctionPass(ID), DL(nullptr) {
+    initializeMemMaskPass(*PassRegistry::getPassRegistry());
+  }
+
+  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    AU.addRequired<LoopInfoWrapperPass>();
+  }
+
+
+
+  virtual bool doInitialization(Module &M) {
+    DL = &M.getDataLayout();
+
+    StackPtrTy = Type::getInt8PtrTy(M.getContext());
+    IntPtrTy = DL->getIntPtrType(M.getContext());
+    Int32Ty = Type::getInt32Ty(M.getContext());
+    Int8Ty = Type::getInt8Ty(M.getContext());
+
+    return false;
+  }
+
+  bool runOnFunction(Function &F);
+
+private:
+  State ExecuteI(const State &InState, Instruction *I);
+  State ExecuteB(const State &InState, BasicBlock *BB);
+  State Join(const State &A, State &B);
+
+  void protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask);
+  bool safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset);
+  void protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask);
+  Value *protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset);
+};
+
 class AugmentArgs : public ModulePass {
  public:
   explicit AugmentArgs(bool CompileKernel = false)
@@ -89,10 +254,6 @@ class AugmentArgs : public ModulePass {
   Function *Func;
   Type *IntPtrTy;
   const DataLayout *DL;
-  void protectFunction(Function &F, Value *Mask);
-  bool safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset);
-  void protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask);
-  void protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset);
 };
 
 struct Info {
@@ -102,7 +263,7 @@ struct Info {
 
 const int64_t GuardSize = 0x1000;
 
-bool AugmentArgs::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset) {
+bool MemMask::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset) {
   target = I;
 
   if (prot.count(I)) {
@@ -206,7 +367,7 @@ void UpdateConstantUse(Function &F, Constant *C, Value *From, Value *To) {
   }
 }
 */
-void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
+Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
   IRBuilder<> IRB(F.getEntryBlock().getFirstInsertionPt());
 
   Value *Ptr = PtrUse.get();
@@ -215,7 +376,7 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
   SmallSet<Value *, 8> phis;
 
   if (safePtr(Ptr, prot, phis, 0, CanOffset ? DL->getTypeAllocSize(MemType) : 0, Target, CanOffset))
-    return;
+    return nullptr;
 
   // TODO: If Target is a Constant, call safeConstantPtr which has a map of Constants to protected values
   // If a safe one is found, recreate the instructions required to get the constant,
@@ -283,9 +444,11 @@ void AugmentArgs::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse
   }
 
   prot.insert(MaskedPtr);
+
+  return MaskedPtr;
 }
 
-void AugmentArgs::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
+void MemMask::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
   protectValue(F, prot, I->getOperandUse(PtrOp), Mask, true);
   IRBuilder<> IRB(I);
 /*
@@ -296,9 +459,7 @@ void AugmentArgs::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instr
 
 }
 
-void AugmentArgs::protectFunction(Function &F, Value *Mask) {
-  DenseSet<Value *> prot;
-
+void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
   for (auto &BB: F) {
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
       Instruction *I = Iter++;
@@ -494,8 +655,6 @@ bool AugmentArgs::runOnModule(Module &M) {
     M.dump();
     llvm::errs() << "/ADDCALL\n";
 */
-    Func = &NF;
-    protectFunction(NF, Mask);
 /*
     llvm::errs() << "PROTF" << NF.getName() << "\n";
     M.dump();
@@ -509,123 +668,6 @@ bool AugmentArgs::runOnModule(Module &M) {
   return true;
 }
 
-struct Range {
-  bool Unknown;
-  int64_t RelStart;
-  int64_t RelEnd;
-
-  static Range bottom() {
-    Range r;
-    r.RelStart = INT64_MIN;
-    r.RelEnd = INT64_MAX;
-    r.Unknown = false;
-    return r;
-  }
-
-  static Range unknown() {
-    Range r;
-    r.Unknown = true;
-    return r;
-  }
-
-  static Range exact() {
-    Range r;
-    r.Unknown = false;
-    r.RelStart = 0;
-    r.RelEnd = 0;
-    return r;
-  }
-
-  static std::string num(int64_t n) {
-    std::stringstream s;
-    if (n == INT64_MIN) {
-      s << "-∞";
-    } else if (n == INT64_MAX) {
-      s << "+∞";
-    } else {
-      s << n;
-    }
-    return s.str();
-  }
-
-  bool allowed() {
-    if (Unknown) {
-      return false;
-    } else {
-      return (RelStart > -512 && RelStart <= 0) && (RelEnd < 512 && RelEnd >= 0);
-    }
-  }
-
-  std::string str() {
-    if (Unknown) {
-      return "⊥";
-    } else {
-      std::stringstream s;
-      s << "[" << num(RelStart) << ", " << num(RelEnd) << "]";
-      return s.str();
-    }
-  }
-
-  static int64_t offset(int64_t base, int64_t offset) {
-    // base - offset where base is RelStart should return -INF if oob
-    // base + offset where base is RelEnd should return INF if oob
-
-    if (base == INT64_MIN || base == INT64_MAX) {
-      return base;
-    }
-
-    const int64_t bound = 20000;
-
-    if (offset > bound) {
-      return INT64_MAX;
-    }
-    if (offset < -bound) {
-      return INT64_MIN;
-    }
-
-    int64_t n = base + offset;
-
-    if (n < -bound) {
-      return INT64_MIN;
-    }
-
-    if (n > bound) {
-      return INT64_MAX;
-    }
-    if (n < -bound) {
-      return INT64_MIN;
-    }
-
-    return n;
-  }
-
-  Range offset(int64_t o) {
-    Range r = *this;
-
-    r.RelStart = offset(r.RelStart, o);
-    r.RelEnd = offset(r.RelEnd, o);
-    return r;
-  }
-
-  Range widen(Range old) {
-    Range r = old;
-
-    if (old.Unknown) {
-      return *this;
-    }
-
-    if (RelStart < old.RelStart) {
-      r.RelStart = INT64_MIN;
-    }
-
-    if (RelEnd > old.RelEnd) {
-      r.RelEnd = INT64_MAX;
-    }
-
-    return r;
-  }
-};
-
 bool operator!=(const Range& lhs, const Range& rhs) {
   if (lhs.Unknown != rhs.Unknown)
     return true;
@@ -633,51 +675,6 @@ bool operator!=(const Range& lhs, const Range& rhs) {
     return false;
   return lhs.RelStart != rhs.RelStart || lhs.RelEnd != rhs.RelEnd;
 }
-
-class MemMask : public FunctionPass {
-  const DataLayout *DL;
-
-  Type *StackPtrTy;
-  Type *IntPtrTy;
-  Type *Int32Ty;
-  Type *Int8Ty;
-  Value *Mask;
-
-
-public:
-  typedef DenseMap<Value *, Range> State;
-
-  static char ID; // Pass identification, replacement for typeid.
-  MemMask() : FunctionPass(ID), DL(nullptr) {
-    initializeMemMaskPass(*PassRegistry::getPassRegistry());
-  }
-
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    AU.addRequired<LoopInfoWrapperPass>();
-  }
-
-
-
-  virtual bool doInitialization(Module &M) {
-    DL = &M.getDataLayout();
-
-    StackPtrTy = Type::getInt8PtrTy(M.getContext());
-    IntPtrTy = DL->getIntPtrType(M.getContext());
-    Int32Ty = Type::getInt32Ty(M.getContext());
-    Int8Ty = Type::getInt8Ty(M.getContext());
-
-    return false;
-  }
-
-  bool runOnFunction(Function &F);
-
-private:
-  State ExecuteI(const State &InState, Instruction *I);
-  State ExecuteB(const State &InState, BasicBlock *BB);
-  State Join(const State &A, State &B);
-
-
-}; // class SafeStack
 
 Range GetRange(const MemMask::State &S, Value *V) {
    auto it = S.find(V);
@@ -706,7 +703,7 @@ MemMask::State MemMask::ExecuteI(const State &InState, Instruction *I) {
 
   if (auto C = dyn_cast<CastInst>(I)) {
     if (C->isNoopCast(*DL)) {
-      R[C] = R[C->getOperand(0)];
+      R[C] = GetRange(R, C->getOperand(0));
     }
   } else if (auto C = dyn_cast<BinaryOperator>(I)) {
     if (C->getOperand(1) == Mask) { // AND with [0, 0] is always valid. A special MASK value is not needed
@@ -772,16 +769,64 @@ void Dump(MemMask::State S) {
 
 bool MemMask::runOnFunction(Function &F) {
   Mask = &*F.arg_begin();
-  //LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+
+  LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+
+  DenseSet<Value *> prot;
+  DenseMap<Value *, Value *> checks;
+
+  protectFunction(F, prot, Mask);
+
+  for (auto &BB: F) {
+    Loop *L = LI->getLoopFor(&BB);
+    if(!L)
+      continue;
+
+    for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
+      Instruction *I = Iter++;
+
+      if (auto C = dyn_cast<BinaryOperator>(I)) {
+        if (C->getOperand(1) == Mask) {
+          Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
+          Value *BasePtr = PtrToInt->getOperand(0);
+
+          auto PN = dyn_cast<PHINode>(BasePtr);
+          if (!PN)
+            continue;
+
+          auto protectIncoming = [&] () -> Value * {
+            for (unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
+              if (LI->getLoopFor(PN->getIncomingBlock(i)) != L) {
+
+                auto NC = protectValue(F, prot, PN->getOperandUse(i), Mask, true);
+                if (NC) {
+                  llvm::errs() << "\nINSERTED CHECK in LOOP for ";
+                  PN->getOperand(i)->dump();
+                  llvm::errs() << "\nBASED ON CHECK";
+                  C->dump();
+                  llvm::errs() << "\n";
+
+                  return NC;
+                }
+              }
+            }
+            return nullptr;
+          };
+
+          auto NC = protectIncoming();
+
+          if (NC) {
+            checks.insert(std::pair<Value *, Value *>(C, NC));
+          }
+        }
+      }
+    }
+  }
+
 
   State unknown;
 
   bool debug = false;
-
-  for (auto &A: F.args()) {
-    unknown.insert(std::pair<Value *, Range>(&A, Range::exact()));
-  }
-
 
   for (auto &BB: F) {
     for (auto &I: BB) {
@@ -800,8 +845,6 @@ bool MemMask::runOnFunction(Function &F) {
     InMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
     OutMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
   }
-
-  //WorkList.push_back(&F.getEntryBlock());
 
   if (debug)
     llvm::errs() << "DURING ANALYSIS OF " << F.getName() << "\n";
@@ -847,12 +890,13 @@ bool MemMask::runOnFunction(Function &F) {
       }
     }
   }
-
+if (debug) {
   llvm::errs() << "ANALYSIS OF " << F.getName() << "\n";
 
   for (auto &BB: F) {
     State In = InMap[&BB];
     State Out = OutMap[&BB];
+
     llvm::errs() << "\nInBLOCK " << BB.getName() << "\n";
     Dump(In);
 
@@ -861,6 +905,8 @@ bool MemMask::runOnFunction(Function &F) {
     llvm::errs() << "OutBLOCK " << BB.getName() << "\n";
     Dump(Out);
   }
+}
+  std::vector<Value *> removing;
 
   for (auto &BB: F) {
     State In = InMap[&BB];
@@ -869,24 +915,31 @@ bool MemMask::runOnFunction(Function &F) {
 
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
       Instruction *I = Iter++;
-
+/*
+      llvm::errs() << "\nEXEC INSTR in " << BB.getName() << "\n";
+      I->dump();
+      llvm::errs() << "--\n";
+      Dump(SI);
+*/
       if (auto C = dyn_cast<BinaryOperator>(I)) {
         if (C->getOperand(1) == Mask) {
           Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
           Value *BasePtr = PtrToInt->getOperand(0);
 
           if (GetRange(SI, BasePtr).allowed()) {
-            Instruction *IntToPtr = Iter++; // Skip IntToPtr instruction;
-
-            llvm::errs() << "\nRemoving CHECK ";
+            llvm::errs() << "\nRemoving CHECK in " << F.getName();
             C->dump();
             llvm::errs() << "\n";
+/*
+            llvm::errs() << "\nProtecting ";
+            BasePtr->dump();
+            llvm::errs() << "\n";
 
-            IntToPtr->replaceAllUsesWith(BasePtr);
-
-            IntToPtr->eraseFromParent();
-            C->eraseFromParent();
-            PtrToInt->eraseFromParent();
+            llvm::errs() << "\nWith range";
+            llvm::errs() << GetRange(SI, BasePtr).str() << "\n";
+*/
+            removing.push_back(C);
+            checks.erase(C);
 
             continue;
           }
@@ -898,9 +951,33 @@ bool MemMask::runOnFunction(Function &F) {
     }
   }
 
+  for (auto &pair: checks) {
+    auto C = dyn_cast<Instruction>(pair.getSecond());
+    removing.push_back(C);
+
+    llvm::errs() << "\nRemoving UNHELPFUL CHECK in " << F.getName();
+    C->dump();
+    llvm::errs() << "\n";
+  }
+
+  for (auto &r: removing) {
+    auto C = dyn_cast<Instruction>(r);
+
+    Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
+    Instruction *IntToPtr = dyn_cast<Instruction>(C->use_begin()->getUser());
+    Value *BasePtr = PtrToInt->getOperand(0);
+
+    IntToPtr->replaceAllUsesWith(BasePtr);
+
+    IntToPtr->eraseFromParent();
+    C->eraseFromParent();
+    PtrToInt->eraseFromParent();
+  }
+
+  if (debug) {
   llvm::errs() << "OptFunc " << F.getName() << "\n";
   F.dump();
-
+}
   return true;
 }
 
