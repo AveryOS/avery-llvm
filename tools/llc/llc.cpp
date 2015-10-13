@@ -199,7 +199,6 @@ int main(int argc, char **argv) {
   initializeLoopStrengthReducePass(*Registry);
   initializeLowerIntrinsicsPass(*Registry);
   initializeUnreachableBlockElimPass(*Registry);
-  initializeInstrumentation(*Registry);
 
   // Register the target printer for --version.
   cl::AddExtraVersionPrinter(TargetRegistry::printRegisteredTargetsForVersion);
