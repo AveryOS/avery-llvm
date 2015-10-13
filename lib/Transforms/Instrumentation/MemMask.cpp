@@ -21,6 +21,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/Timer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Format.h"
@@ -82,7 +83,7 @@ struct Range {
   int64_t RelStart;
   int64_t RelEnd;
 
-  static Range bottom() {
+  static Range top() {
     Range r;
     r.RelStart = INT64_MIN;
     r.RelEnd = INT64_MAX;
@@ -167,8 +168,11 @@ struct Range {
     return n;
   }
 
-  Range offset(int64_t o) {
+  Range offset(int64_t o) const {
     Range r = *this;
+
+    if (o == 0)
+      return r;
 
     r.RelStart = offset(r.RelStart, o);
     r.RelEnd = offset(r.RelEnd, o);
@@ -394,7 +398,8 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
     IRB.SetInsertPoint(it);
   }
 
-  auto PtrVal = IRB.CreatePtrToInt(Target, IntPtrTy);
+  auto PtrVal = IRB.Insert(CastInst::Create(Instruction::PtrToInt, Target, IntPtrTy), ""); // This must be an instruction
+      //IRB.CreatePtrToInt(Target, IntPtrTy);
   auto MaskedVal = IRB.CreateAnd(PtrVal, Mask);
   auto MaskedPtr = IRB.CreateIntToPtr(MaskedVal, Target->getType(), "P_" + Target->getName());
 
@@ -445,7 +450,7 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
 
   prot.insert(MaskedPtr);
 
-  return MaskedPtr;
+  return MaskedVal;
 }
 
 void MemMask::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
@@ -679,7 +684,7 @@ bool operator!=(const Range& lhs, const Range& rhs) {
 Range GetRange(const MemMask::State &S, Value *V) {
    auto it = S.find(V);
    if (it == S.end()) {
-     return Range::bottom();
+     return Range::top();
    } else {
      return (*it).getSecond();
    }
@@ -770,12 +775,23 @@ void Dump(MemMask::State S) {
 bool MemMask::runOnFunction(Function &F) {
   Mask = &*F.arg_begin();
 
+  bool debug = false;
+
   LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
 
   DenseSet<Value *> prot;
   DenseMap<Value *, Value *> checks;
 
+  {NamedRegionTimer T("Protection", "MemMask", TimePassesIsEnabled);
+
   protectFunction(F, prot, Mask);
+
+  }
+
+  if (LI->empty())
+    return true;
+
+  {NamedRegionTimer T("Loop check duplication", "MemMask", TimePassesIsEnabled);
 
   for (auto &BB: F) {
     Loop *L = LI->getLoopFor(&BB);
@@ -800,12 +816,13 @@ bool MemMask::runOnFunction(Function &F) {
 
                 auto NC = protectValue(F, prot, PN->getOperandUse(i), Mask, true);
                 if (NC) {
-                  llvm::errs() << "\nINSERTED CHECK in LOOP for ";
-                  PN->getOperand(i)->dump();
-                  llvm::errs() << "\nBASED ON CHECK";
-                  C->dump();
-                  llvm::errs() << "\n";
-
+                  if (debug) {
+                    llvm::errs() << "\nINSERTED CHECK in LOOP for ";
+                    PN->getOperand(i)->dump();
+                    llvm::errs() << "\nBASED ON CHECK";
+                    C->dump();
+                    llvm::errs() << "\n";
+                  }
                   return NC;
                 }
               }
@@ -823,10 +840,13 @@ bool MemMask::runOnFunction(Function &F) {
     }
   }
 
+  }
+
+  DenseMap<BasicBlock *, BlockState> BlockMap;
+
+  {NamedRegionTimer T("Analysis", "MemMask", TimePassesIsEnabled);
 
   State unknown;
-
-  bool debug = false;
 
   for (auto &BB: F) {
     for (auto &I: BB) {
@@ -837,50 +857,54 @@ bool MemMask::runOnFunction(Function &F) {
 
   std::vector<BasicBlock *> WorkList;
 
-  DenseMap<BasicBlock *, State> InMap;
-  DenseMap<BasicBlock *, State> OutMap;
 
   for (auto &BB: F) {
     WorkList.insert(WorkList.begin(), &BB);
-    InMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
-    OutMap.insert(std::pair<BasicBlock *, State>(&BB, unknown));
+    BlockState s;
+    s.In = unknown;
+    s.Out = unknown;
+    s.Visits = 0;
+    BlockMap.insert(std::pair<BasicBlock *, BlockState>(&BB, s));
   }
 
-  if (debug)
+  if (debug) {
     llvm::errs() << "DURING ANALYSIS OF " << F.getName() << "\n";
+    F.dump();
+  }
 
   while (!WorkList.empty()) {
     BasicBlock *BB = WorkList.back();
     WorkList.pop_back();
 
-    State OldIn = InMap[BB];
-    State OldOut = OutMap[BB];
+    auto &BS = BlockMap[BB];
 
     State In = unknown;
 
     for (auto it = pred_begin(BB), et = pred_end(BB); it != et; ++it) {
-      In = Join(In, OutMap[*it]);
+      In = Join(In, BlockMap[*it].Out);
     }
 
   if (debug){
     llvm::errs() << "\nInBLOCK " << BB->getName() << "\n";
     Dump(In); }
 
-    State Out = ExecuteB(In, BB);
-
-    if (debug){
-    llvm::errs() << "OutBLOCK " << BB->getName() << "\n";
-    Dump(Out);}
-
-    if (Diff(In, OldIn) || Diff(Out, OldOut)) {
+/*
+    if (BS.Visits != 0 && Diff(Out, BS.In) && !Diff(In, BS.In)) {
+      llvm::errs() << "OUTPUT CHANGED BUT INPUT DIDN'T " << BB->getName() << "\n";
+    }
+*/
+    if (Diff(In, BS.In) || BS.Visits == 0) {
       if (debug){
       llvm::errs() << "ChangedBLOCK " << BB->getName() << "\n";}
 
-      if (debug && Diff(Out, OldOut) && !Diff(In, OldIn)){
-      llvm::errs() << "OUTPUT CHANGED BUT INPUT DIDN'T " << BB->getName() << "\n";}
+      State Out = ExecuteB(In, BS);
 
-      InMap[BB] = In;
-      OutMap[BB] = Out;
+      if (debug){
+      llvm::errs() << "OutBLOCK " << BB->getName() << "\n";
+      Dump(Out);}
+
+      BS.In = In;
+      BS.Out = Out;
 
       for (auto it = succ_begin(BB), et = succ_end(BB); it != et; ++it) {
         if (std::find(WorkList.begin(), WorkList.end(), *it) == WorkList.end()) {
@@ -889,27 +913,33 @@ bool MemMask::runOnFunction(Function &F) {
         }
       }
     }
+
+    BS.Visits++;
   }
 if (debug) {
   llvm::errs() << "ANALYSIS OF " << F.getName() << "\n";
 
   for (auto &BB: F) {
-    State In = InMap[&BB];
-    State Out = OutMap[&BB];
-
+    auto &BS = BlockMap[&BB];
     llvm::errs() << "\nInBLOCK " << BB.getName() << "\n";
-    Dump(In);
+    Dump(BS.In);
 
     BB.dump();
 
     llvm::errs() << "OutBLOCK " << BB.getName() << "\n";
-    Dump(Out);
+    Dump(BS.Out);
   }
 }
+
+
+  }
+
+  {NamedRegionTimer T("Check removing", "MemMask", TimePassesIsEnabled);
+
   std::vector<Value *> removing;
 
   for (auto &BB: F) {
-    State In = InMap[&BB];
+    State In = BlockMap[&BB].In;
 
     State SI = In;
 
@@ -924,6 +954,7 @@ if (debug) {
       if (auto C = dyn_cast<BinaryOperator>(I)) {
         if (C->getOperand(1) == Mask) {
           Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
+          assert(PtrToInt != nullptr);
           Value *BasePtr = PtrToInt->getOperand(0);
 
           if (GetRange(SI, BasePtr).allowed()) {
@@ -940,14 +971,12 @@ if (debug) {
 */
             removing.push_back(C);
             checks.erase(C);
-
-            continue;
           }
         }
       }
 
 
-      SI = ExecuteI(SI, I);
+      ExecuteI(SI, I, false);
     }
   }
 
@@ -955,9 +984,10 @@ if (debug) {
     auto C = dyn_cast<Instruction>(pair.getSecond());
     removing.push_back(C);
 
+    if (debug) {
     llvm::errs() << "\nRemoving UNHELPFUL CHECK in " << F.getName();
     C->dump();
-    llvm::errs() << "\n";
+    llvm::errs() << "\n";}
   }
 
   for (auto &r: removing) {
@@ -966,12 +996,26 @@ if (debug) {
     Instruction *PtrToInt = dyn_cast<Instruction>(C->getOperand(0));
     Instruction *IntToPtr = dyn_cast<Instruction>(C->use_begin()->getUser());
     Value *BasePtr = PtrToInt->getOperand(0);
+/*
+    llvm::errs() << "\nPtrToInt CHECK in " << F.getName();
+    PtrToInt->dump();
+    llvm::errs() << "\n";
 
+    llvm::errs() << "\nAnd CHECK in " << F.getName();
+    C->dump();
+    llvm::errs() << "\n";
+
+    llvm::errs() << "\nIntToPtr CHECK in " << F.getName();
+    IntToPtr->dump();
+    llvm::errs() << "\n";
+*/
     IntToPtr->replaceAllUsesWith(BasePtr);
 
     IntToPtr->eraseFromParent();
     C->eraseFromParent();
     PtrToInt->eraseFromParent();
+  }
+
   }
 
   if (debug) {
