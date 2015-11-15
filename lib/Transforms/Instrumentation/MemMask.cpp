@@ -236,9 +236,9 @@ public:
   bool runOnFunction(Function &F);
 
 private:
-  State ExecuteI(const State &InState, Instruction *I);
-  State ExecuteB(const State &InState, BasicBlock *BB);
-  State Join(const State &A, State &B);
+  void ExecuteI(State &R, Instruction *I, bool Widen);
+  void ExecuteB(State &InState, BasicBlock *BB, bool Widen);
+  void Join(State &A, State &B);
 
   void protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask);
   bool safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phis, int64_t offset, int64_t size, Value *&target, bool CanOffset);
@@ -703,9 +703,7 @@ Range JoinRange(const Range &A, const Range &B) {
   return r;
 }
 
-MemMask::State MemMask::ExecuteI(const State &InState, Instruction *I) {
-  State R = InState;
-
+void MemMask::ExecuteI(State &R, Instruction *I, bool Widen) {
   if (auto C = dyn_cast<CastInst>(I)) {
     if (C->isNoopCast(*DL)) {
       R[C] = GetRange(R, C->getOperand(0));
@@ -726,31 +724,33 @@ MemMask::State MemMask::ExecuteI(const State &InState, Instruction *I) {
     auto Val = I->getOperand(Ptr);
     auto MemType = Val->getType()->getPointerElementType();
     Range r = Range::exact(); ;
-    r.RelEnd -= DL->getTypeAllocSize(MemType) - 1;
-    //R[Val] = r;
+    //r.RelEnd -= DL->getTypeAllocSize(MemType) - 1;
+    R[Val] = r;
+    R[I] = Range::top();
   } else if (auto PN = dyn_cast<PHINode>(I)) {
+    Range phi = R[PN];
     for (Value *val: PN->incoming_values()) {
-      R[PN] = JoinRange(R[PN], GetRange(R, val));
+      phi = JoinRange(phi, GetRange(R, val));
     }
+    if (Widen && (R[PN] != phi)) {
+      phi = Range::top();
+    }
+    R[PN] = phi;
+  } else if (R.find(I) != R.end()) {
+    R[I] = Range::top();
   }
-
-  return R;
 }
 
-MemMask::State MemMask::ExecuteB(const State &InState, BasicBlock *BB) {
-  State r = InState;
+void MemMask::ExecuteB(State &State, BasicBlock *BB, bool Widen) {
   for (auto &I: *BB) {
-    r = ExecuteI(r, &I);
+    ExecuteI(State, &I, Widen);
   }
-  return r;
 }
 
-MemMask::State MemMask::Join(const MemMask::State &A, MemMask::State &B) {
-  State R = A;
-  for (auto &v: R) {
+void MemMask::Join(MemMask::State &A, MemMask::State &B) {
+  for (auto &v: A) {
     v.getSecond() = JoinRange(v.getSecond(), B[v.getFirst()]);
   }
-  return R;
 }
 
 bool Diff(MemMask::State &A, MemMask::State &B) {
@@ -771,6 +771,12 @@ void Dump(MemMask::State S) {
     }
   }
 }
+
+struct BlockState {
+  unsigned Visits;
+  MemMask::State In;
+  MemMask::State Out;
+};
 
 bool MemMask::runOnFunction(Function &F) {
   Mask = &*F.arg_begin();
@@ -881,7 +887,7 @@ bool MemMask::runOnFunction(Function &F) {
     State In = unknown;
 
     for (auto it = pred_begin(BB), et = pred_end(BB); it != et; ++it) {
-      In = Join(In, BlockMap[*it].Out);
+      Join(In, BlockMap[*it].Out);
     }
 
   if (debug){
@@ -897,14 +903,15 @@ bool MemMask::runOnFunction(Function &F) {
       if (debug){
       llvm::errs() << "ChangedBLOCK " << BB->getName() << "\n";}
 
-      State Out = ExecuteB(In, BS);
+      BS.In = In;
+      BS.Out = std::move(In);
+
+      ExecuteB(BS.Out, BB, BS.Visits > 2);
 
       if (debug){
       llvm::errs() << "OutBLOCK " << BB->getName() << "\n";
-      Dump(Out);}
+      Dump(BS.Out);}
 
-      BS.In = In;
-      BS.Out = Out;
 
       for (auto it = succ_begin(BB), et = succ_end(BB); it != et; ++it) {
         if (std::find(WorkList.begin(), WorkList.end(), *it) == WorkList.end()) {
@@ -939,9 +946,7 @@ if (debug) {
   std::vector<Value *> removing;
 
   for (auto &BB: F) {
-    State In = BlockMap[&BB].In;
-
-    State SI = In;
+    State &SI = BlockMap[&BB].In;
 
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
       Instruction *I = Iter++;
