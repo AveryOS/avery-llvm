@@ -158,6 +158,7 @@ public:
     AMDHSA,     // AMD HSA Runtime
     PS4,
     ELFIAMCU,
+    Avery,
     TvOS,       // Apple tvOS
     WatchOS,    // Apple watchOS
     LastOSType = WatchOS

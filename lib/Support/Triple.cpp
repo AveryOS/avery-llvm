@@ -182,6 +182,7 @@ const char *Triple::getOSTypeName(OSType Kind) {
   case AMDHSA: return "amdhsa";
   case PS4: return "ps4";
   case ELFIAMCU: return "elfiamcu";
+  case Avery: return "avery";
   case TvOS: return "tvos";
   case WatchOS: return "watchos";
   }
@@ -439,6 +440,7 @@ static Triple::OSType parseOS(StringRef OSName) {
     .StartsWith("amdhsa", Triple::AMDHSA)
     .StartsWith("ps4", Triple::PS4)
     .StartsWith("elfiamcu", Triple::ELFIAMCU)
+    .StartsWith("avery", Triple::Avery)
     .StartsWith("tvos", Triple::TvOS)
     .StartsWith("watchos", Triple::WatchOS)
     .Default(Triple::UnknownOS);

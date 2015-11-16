@@ -40,7 +40,7 @@ namespace {
 Function *RecreateFunction(Function *Func, FunctionType *NewType) {
   Function *NewFunc = Function::Create(NewType, Func->getLinkage());
   //NewFunc->copyAttributesFrom(Func);
-  Func->getParent()->getFunctionList().insert(Func, NewFunc);
+  Func->getParent()->getFunctionList().insert(Module::FunctionListType::iterator(Func), NewFunc);
   NewFunc->takeName(Func);
   NewFunc->getBasicBlockList().splice(NewFunc->begin(),
                                       Func->getBasicBlockList());
@@ -372,7 +372,7 @@ void UpdateConstantUse(Function &F, Constant *C, Value *From, Value *To) {
 }
 */
 Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
-  IRBuilder<> IRB(F.getEntryBlock().getFirstInsertionPt());
+  IRBuilder<> IRB(&F.getEntryBlock());
 
   Value *Ptr = PtrUse.get();
   Value *Target;
@@ -395,7 +395,7 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
     // Skip Phis
     while (dyn_cast<PHINode>(&*it)) ++it;
 
-    IRB.SetInsertPoint(it);
+    IRB.SetInsertPoint(TI->getParent(), it);
   }
 
   auto PtrVal = IRB.Insert(CastInst::Create(Instruction::PtrToInt, Target, IntPtrTy), ""); // This must be an instruction
@@ -467,7 +467,7 @@ void MemMask::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instructi
 void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
   for (auto &BB: F) {
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
-      Instruction *I = Iter++;
+      Instruction *I = &*(Iter++);
       if (isa<LoadInst>(I)) {
         protectValueAndSeg(F, prot, I, 0, Mask);
       } else if (isa<StoreInst>(I)) {
@@ -499,6 +499,9 @@ void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask)
 }
 
 bool AugmentArgs::runOnModule(Module &M) {
+  if (Triple(M.getTargetTriple()).getOS() != Triple::OSType::Avery)
+    return false;
+
   DL = &M.getDataLayout();
   IntPtrTy = DL->getIntPtrType(M.getContext());
 
@@ -527,7 +530,7 @@ bool AugmentArgs::runOnModule(Module &M) {
     Value *Mask = &*NewArg;
     ++NewArg;
     for (auto &Arg : F.args()) {
-      Arg.replaceAllUsesWith(NewArg);
+      Arg.replaceAllUsesWith(&*NewArg);
       NewArg->takeName(&Arg);
       ++NewArg;
     }
@@ -724,7 +727,7 @@ void MemMask::ExecuteI(State &R, Instruction *I, bool Widen) {
     auto Val = I->getOperand(Ptr);
     auto MemType = Val->getType()->getPointerElementType();
     Range r = Range::exact(); ;
-    //r.RelEnd -= DL->getTypeAllocSize(MemType) - 1;
+    r.RelEnd -= DL->getTypeAllocSize(MemType) - 1;
     R[Val] = r;
     R[I] = Range::top();
   } else if (auto PN = dyn_cast<PHINode>(I)) {
@@ -779,6 +782,9 @@ struct BlockState {
 };
 
 bool MemMask::runOnFunction(Function &F) {
+  if (Triple(F.getParent()->getTargetTriple()).getOS() != Triple::OSType::Avery)
+    return false;
+
   Mask = &*F.arg_begin();
 
   bool debug = false;
@@ -805,7 +811,7 @@ bool MemMask::runOnFunction(Function &F) {
       continue;
 
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
-      Instruction *I = Iter++;
+      Instruction *I = &*(Iter++);
 
       if (auto C = dyn_cast<BinaryOperator>(I)) {
         if (C->getOperand(1) == Mask) {
@@ -949,7 +955,7 @@ if (debug) {
     State &SI = BlockMap[&BB].In;
 
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
-      Instruction *I = Iter++;
+      Instruction *I = &*(Iter++);
 /*
       llvm::errs() << "\nEXEC INSTR in " << BB.getName() << "\n";
       I->dump();
