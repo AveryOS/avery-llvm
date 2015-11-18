@@ -373,6 +373,7 @@ void UpdateConstantUse(Function &F, Constant *C, Value *From, Value *To) {
 */
 Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
   IRBuilder<> IRB(&F.getEntryBlock());
+  IRB.SetInsertPoint(&F.getEntryBlock(), F.getEntryBlock().begin());
 
   Value *Ptr = PtrUse.get();
   Value *Target;
@@ -501,7 +502,6 @@ void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask)
 bool AugmentArgs::runOnModule(Module &M) {
   if (Triple(M.getTargetTriple()).getOS() != Triple::OSType::Avery)
     return false;
-
   DL = &M.getDataLayout();
   IntPtrTy = DL->getIntPtrType(M.getContext());
 
@@ -799,6 +799,10 @@ bool MemMask::runOnFunction(Function &F) {
   protectFunction(F, prot, Mask);
 
   }
+
+  return true;
+
+  // Skip optimizations for now
 
   if (LI->empty())
     return true;
