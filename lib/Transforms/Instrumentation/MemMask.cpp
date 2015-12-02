@@ -457,12 +457,10 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
 void MemMask::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
   protectValue(F, prot, I->getOperandUse(PtrOp), Mask, true);
   IRBuilder<> IRB(I);
-/*
-      auto SegPtrVal = IRB.CreatePtrToInt(I.i->getOperand(I.ptr), IntPtrTy);
-      auto SegPtr = IRB.CreateIntToPtr(SegPtrVal, MemType->getPointerTo(256));
-    //auto SegPtr = IRB.CreateAddrSpaceCast(I.i->getOperand(I.ptr), MemType->getPointerTo(256)); CRASHES
-    I.i->setOperand(I.ptr, SegPtr); SegPtr*/
-
+  auto SegPtrVal = IRB.CreatePtrToInt(I->getOperand(PtrOp), IntPtrTy);
+  auto SegPtr = IRB.CreateIntToPtr(SegPtrVal, I->getOperand(PtrOp)->getType()->getPointerTo(256));
+  //auto SegPtr = IRB.CreateAddrSpaceCast(I.i->getOperand(I.ptr), MemType->getPointerTo(256)); CRASHES
+  I->setOperand(PtrOp, SegPtr);
 }
 
 void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
@@ -539,8 +537,8 @@ bool AugmentArgs::runOnModule(Module &M) {
 
     NF.setCallingConv(CallingConv::Sandbox);
 
-    if (NF.hasExternalLinkage() && NF.getName() == "main")
-      Mask = ConstantInt::get(IntPtrTy, -1);
+    /*if (NF.hasExternalLinkage() && NF.getName() == "main")
+      Mask = ConstantInt::get(IntPtrTy, -1);*/
 
     for (auto &BB: NF) {
       for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
