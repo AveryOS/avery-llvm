@@ -417,10 +417,15 @@ function(llvm_add_library name)
   endif()
   add_link_opts( ${name} )
   if(ARG_OUTPUT_NAME)
-    set_target_properties(${name}
-      PROPERTIES
-      OUTPUT_NAME ${ARG_OUTPUT_NAME}
-      )
+    if(MINGW)
+      string(REGEX REPLACE "^lib([A-Za-z]+)" "\\1" LIB_OUTPUT_NAME ${ARG_OUTPUT_NAME})
+      set_target_properties(${name} PROPERTIES OUTPUT_NAME ${LIB_OUTPUT_NAME} RUNTIME_OUTPUT_NAME ${ARG_OUTPUT_NAME} ARCHIVE_OUTPUT_NAME ${LIB_OUTPUT_NAME})
+    else()
+      set_target_properties(${name}
+        PROPERTIES
+        OUTPUT_NAME ${ARG_OUTPUT_NAME}
+        )
+    endif()
   endif()
 
   if(ARG_MODULE)
