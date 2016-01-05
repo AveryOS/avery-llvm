@@ -458,8 +458,8 @@ void MemMask::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instructi
   protectValue(F, prot, I->getOperandUse(PtrOp), Mask, true);
   IRBuilder<> IRB(I);
   auto SegPtrVal = IRB.CreatePtrToInt(I->getOperand(PtrOp), IntPtrTy);
-  auto SegPtr = IRB.CreateIntToPtr(SegPtrVal, I->getOperand(PtrOp)->getType()->getPointerTo(256));
-  //auto SegPtr = IRB.CreateAddrSpaceCast(I.i->getOperand(I.ptr), MemType->getPointerTo(256)); CRASHES
+  auto SegPtr = IRB.CreateIntToPtr(SegPtrVal, I->getOperand(PtrOp)->getType()->getPointerElementType()->getPointerTo(256));
+  //auto SegPtr = IRB.CreateAddrSpaceCast(I->getOperand(PtrOp), I->getOperand(PtrOp)->getType()->getPointerElementType()->getPointerTo(256)); //CRASHES
   I->setOperand(PtrOp, SegPtr);
 }
 
@@ -467,10 +467,10 @@ void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask)
   for (auto &BB: F) {
     for (BasicBlock::iterator Iter = BB.begin(), E = BB.end(); Iter != E;) {
       Instruction *I = &*(Iter++);
-      if (isa<LoadInst>(I)) {
-        protectValueAndSeg(F, prot, I, 0, Mask);
-      } else if (isa<StoreInst>(I)) {
-        protectValueAndSeg(F, prot, I, 1, Mask);
+      if (auto LI = dyn_cast<LoadInst>(I)) {
+        protectValueAndSeg(F, prot, I, LI->getPointerOperandIndex(), Mask);
+      } else if (auto SI = dyn_cast<StoreInst>(I)) {
+        protectValueAndSeg(F, prot, I, SI->getPointerOperandIndex(), Mask);
       } else if (auto AI = dyn_cast<AtomicRMWInst>(I)) {
         protectValueAndSeg(F, prot, I, AI->getPointerOperandIndex(), Mask);
       } else if (auto AI = dyn_cast<AtomicCmpXchgInst>(I)) {
