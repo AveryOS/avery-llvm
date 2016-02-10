@@ -380,6 +380,8 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
   auto MemType = Ptr->getType()->getPointerElementType();
   SmallSet<Value *, 8> phis;
 
+  // TODO: Have safePtr return the Target in a Use & which if updated ensures that PtrUse is safe
+  // This avoids the issue with not being able to update constants uses later
   if (safePtr(Ptr, prot, phis, 0, CanOffset ? DL->getTypeAllocSize(MemType) : 0, Target, CanOffset))
     return nullptr;
 
@@ -393,8 +395,8 @@ Value *MemMask::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, 
     // Insert it after the instruction generating the pointer
     BasicBlock::iterator it = std::next(BasicBlock::iterator(TI));
     
-    // Skip Phis
-    while (dyn_cast<PHINode>(&*it)) ++it;
+    // Skip prefix nodes
+    while (isa<PHINode>(&*it) || isa<LandingPadInst>(&*it) || isa<CatchPadInst>(&*it)) ++it;
 
     IRB.SetInsertPoint(TI->getParent(), it);
   }
@@ -479,6 +481,7 @@ void MemMask::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask)
           auto Arg = RI->getReturnValue();
           if (Arg && Arg->getType()->isPointerTy())
             protectValue(F, prot, RI->getOperandUse(0), Mask, false);
+      } else if (dyn_cast<FenceInst>(I)) {
       } else if (dyn_cast<InvokeInst>(I)) {
       } else if (dyn_cast<CallInst>(I)) {
        /* for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
