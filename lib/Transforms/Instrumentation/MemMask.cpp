@@ -599,6 +599,8 @@ bool AugmentArgs::runOnModule(Module &M) {
         } else if (auto OldCall = dyn_cast<CallInst>(&I)) {
           if (isa<IntrinsicInst>(OldCall))
             continue;
+          if (isa<InlineAsm>(OldCall->getCalledValue()))
+            continue;
 
           FunctionType *CallFTy = cast<FunctionType>(
               OldCall->getCalledValue()->getType()->getPointerElementType());
