@@ -420,6 +420,7 @@ public:
   bool isTargetCOFF() const { return TargetTriple.isOSBinFormatCOFF(); }
   bool isTargetMachO() const { return TargetTriple.isOSBinFormatMachO(); }
 
+  bool isTargetAvery() const { return TargetTriple.getOS() == Triple::Avery; }
   bool isTargetLinux() const { return TargetTriple.isOSLinux(); }
   bool isTargetAndroid() const { return TargetTriple.isAndroid(); }
   bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }

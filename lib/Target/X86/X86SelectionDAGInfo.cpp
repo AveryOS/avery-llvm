@@ -63,6 +63,9 @@ SDValue X86SelectionDAGInfo::EmitTargetCodeForMemset(
   if (DstPtrInfo.getAddrSpace() >= 256)
     return SDValue();
 
+  if (Subtarget.isTargetAvery())
+    return SDValue();
+
   // If not DWORD aligned or size is more than the threshold, call the library.
   // The libc version is likely to be faster for these cases. It can use the
   // address value and run time information about the CPU.
@@ -219,6 +222,9 @@ SDValue X86SelectionDAGInfo::EmitTargetCodeForMemcpy(
   // If to a segment-relative address space, use the default lowering.
   if (DstPtrInfo.getAddrSpace() >= 256 ||
       SrcPtrInfo.getAddrSpace() >= 256)
+    return SDValue();
+
+  if (Subtarget.isTargetAvery())
     return SDValue();
 
   // If the base register might conflict with our physical registers, bail out.
