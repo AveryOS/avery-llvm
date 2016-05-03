@@ -293,6 +293,11 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::SUBE, VT, Custom);
   }
 
+  if (STI.isTargetAvery()) {
+    setOperationAction(ISD::BRIND, MVT::Other, Expand);
+  }
+
+  // TODO: Allow ISD::BR_JT on Avery
   setOperationAction(ISD::BR_JT            , MVT::Other, Expand);
   setOperationAction(ISD::BRCOND           , MVT::Other, Custom);
   setOperationAction(ISD::BR_CC            , MVT::f32,   Expand);
