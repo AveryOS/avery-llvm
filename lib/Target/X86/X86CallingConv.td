@@ -351,7 +351,7 @@ def CC_X86_64_HHVM_C : CallingConv<[
 ]>;
 
 def CC_X86_64_Sandbox : CallingConv<[
-  CCIfType<[i64], CCAssignToReg<[RBX, RDI, RSI, RDX, RCX, R8 , R9 ]>>,
+  CCIfType<[i64], CCAssignToReg<[RBX, R12, RDI, RSI, RDX, RCX, R8 , R9 ]>>,
   CCDelegateTo<CC_X86_64_C>
 ]>;
 

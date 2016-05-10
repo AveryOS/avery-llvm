@@ -799,6 +799,17 @@ void X86FrameLowering::BuildStackAlignAND(MachineBasicBlock &MBB,
   MI->getOperand(3).setIsDead();
 }
 
+static unsigned getDataStackSize(const Function *Fn) {
+  // The default stack probe size is 4096 if the function has no stackprobesize
+  // attribute.
+  unsigned DataStackSize = 0;
+  if (Fn->hasFnAttribute("data-stack-size"))
+    Fn->getFnAttribute("data-stack-size")
+        .getValueAsString()
+        .getAsInteger(0, DataStackSize);
+  return DataStackSize;
+}
+
 /// emitPrologue - Push callee-saved registers onto the stack, which
 /// automatically adjust the stack pointer. Adjust the stack pointer to allocate
 /// space for local variables. Also emit labels used by the exception handler to
@@ -996,6 +1007,23 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
         .addReg(Establisher)
         .setMIFlag(MachineInstr::FrameSetup);
     MBB.addLiveIn(Establisher);
+  }
+
+  unsigned DataStackSize = getDataStackSize(Fn);
+
+  if (DataStackSize) {
+    BuildMI(MBB, MBBI, DL, TII.get(getSUBriOpcode(true, DataStackSize)), X86::R12)
+      .addReg(X86::R12)
+      .addImm(DataStackSize)
+      .setMIFlag(MachineInstr::FrameSetup);
+    BuildMI(MBB, MBBI, DL, TII.get(X86::TEST8rm))
+      .addReg(X86::RAX)
+      .addReg(X86::R12)
+      .addImm(1)
+      .addReg(0)
+      .addImm(0)
+      .addReg(0)
+      .setMIFlag(MachineInstr::FrameSetup);
   }
 
   if (HasFP) {
@@ -1598,6 +1626,15 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
     // Check for possible merge with preceding ADD instruction.
     Offset += mergeSPUpdates(MBB, MBBI, true);
     emitSPUpdate(MBB, MBBI, Offset, /*InEpilogue=*/true);
+  }
+
+  unsigned DataStackSize = getDataStackSize(MF.getFunction());
+
+  if (DataStackSize) {
+    BuildMI(MBB, MBBI, DL, TII.get(getADDriOpcode(true, DataStackSize)), X86::R12)
+      .addReg(X86::R12)
+      .addImm(DataStackSize)
+      .setMIFlag(MachineInstr::FrameDestroy);
   }
 }
 
