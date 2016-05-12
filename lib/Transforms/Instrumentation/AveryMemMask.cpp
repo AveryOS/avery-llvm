@@ -273,7 +273,7 @@ void Avery::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
 }
 
 void Avery::memMask(Function &F) {
-  Mask = &*F.arg_begin();
+  Value *Mask = &*F.arg_begin();
 
   LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
 

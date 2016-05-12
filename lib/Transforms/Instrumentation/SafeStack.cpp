@@ -531,22 +531,22 @@ Value *SafeStack::moveStaticAllocasToUnsafeStack(
     unsigned Align = std::max((unsigned)DL->getPrefTypeAlignment(Ty),
                               Arg->getParamAlignment());
 
-    // Add alignment.
-    // NOTE: we ensure that BasePointer itself is aligned to >= Align.
-    StaticOffset += Size;
-    StaticOffset = RoundUpToAlignment(StaticOffset, Align);
-
     Value *Off = IRB.CreateGEP(BasePointer, // BasePointer is i8*
-                               ConstantInt::get(Int32Ty, -StaticOffset));
+                               ConstantInt::get(Int32Ty, StaticOffset));
     Value *NewArg = IRB.CreateBitCast(Off, Arg->getType(),
                                      Arg->getName() + ".unsafe-byval");
 
     // Replace alloc with the new location.
     replaceDbgDeclare(Arg, BasePointer, BasePointer->getNextNode(), DIB,
-                      /*Deref=*/true, -StaticOffset);
+                      /*Deref=*/true, StaticOffset);
     Arg->replaceAllUsesWith(NewArg);
     IRB.SetInsertPoint(cast<Instruction>(NewArg)->getNextNode());
     IRB.CreateMemCpy(Off, Arg, Size, Arg->getParamAlignment());
+
+    // Add alignment.
+    // NOTE: we ensure that BasePointer itself is aligned to >= Align.
+    StaticOffset += Size;
+    StaticOffset = RoundUpToAlignment(StaticOffset, Align);
   }
 
   // Allocate space for every unsafe static AllocaInst on the unsafe stack.
@@ -562,21 +562,21 @@ Value *SafeStack::moveStaticAllocasToUnsafeStack(
     unsigned Align =
         std::max((unsigned)DL->getPrefTypeAlignment(Ty), AI->getAlignment());
 
-    // Add alignment.
-    // NOTE: we ensure that BasePointer itself is aligned to >= Align.
-    StaticOffset += Size;
-    StaticOffset = RoundUpToAlignment(StaticOffset, Align);
-
     Value *Off = IRB.CreateGEP(BasePointer, // BasePointer is i8*
-                               ConstantInt::get(Int32Ty, -StaticOffset));
+                               ConstantInt::get(Int32Ty, StaticOffset));
     Value *NewAI = IRB.CreateBitCast(Off, AI->getType(), AI->getName());
     if (AI->hasName() && isa<Instruction>(NewAI))
       cast<Instruction>(NewAI)->takeName(AI);
 
     // Replace alloc with the new location.
-    replaceDbgDeclareForAlloca(AI, BasePointer, DIB, /*Deref=*/true, -StaticOffset);
+    replaceDbgDeclareForAlloca(AI, BasePointer, DIB, /*Deref=*/true, StaticOffset);
     AI->replaceAllUsesWith(NewAI);
     AI->eraseFromParent();
+
+    // Add alignment.
+    // NOTE: we ensure that BasePointer itself is aligned to >= Align.
+    StaticOffset += Size;
+    StaticOffset = RoundUpToAlignment(StaticOffset, Align);
   }
 
   // Re-align BasePointer so that our callees would see it aligned as

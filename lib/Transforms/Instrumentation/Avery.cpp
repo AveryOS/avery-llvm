@@ -42,13 +42,16 @@ bool Avery::runOnModule(Module &M) {
     return false;
 
   DL = &M.getDataLayout();
+  StackPtrTy = Type::getInt8PtrTy(M.getContext());
   IntPtrTy = DL->getIntPtrType(M.getContext());
+  Int32Ty = Type::getInt32Ty(M.getContext());
 
   augmentArgs(M);
 
   for (auto Iter = M.begin(), E = M.end(); Iter != E; ) {
     Function &F = *(Iter++);
     memMask(F);
+    splitStacks(F);
   }
 
   return true;

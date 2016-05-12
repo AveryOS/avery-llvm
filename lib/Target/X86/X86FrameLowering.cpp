@@ -800,8 +800,6 @@ void X86FrameLowering::BuildStackAlignAND(MachineBasicBlock &MBB,
 }
 
 static unsigned getDataStackSize(const Function *Fn) {
-  // The default stack probe size is 4096 if the function has no stackprobesize
-  // attribute.
   unsigned DataStackSize = 0;
   if (Fn->hasFnAttribute("data-stack-size"))
     Fn->getFnAttribute("data-stack-size")

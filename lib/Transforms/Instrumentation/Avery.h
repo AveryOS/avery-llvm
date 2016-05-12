@@ -45,12 +45,34 @@ class Avery : public ModulePass {
   struct Range;
 
   Function *Func;
+  Type *Int32Ty;
   Type *IntPtrTy;
+  Type *StackPtrTy;
   const DataLayout *DL;
+  Value *UnsafeStackPtr = nullptr;
 
   void augmentArgs(Module &M);
   void memMask(Function &F);
   bool eliminateMasks(Function &F, DenseSet<Value *> &prot);
+  void splitStacks(Function &F);
+
+  uint64_t getStaticAllocaAllocationSize(const AllocaInst* AI);
+  void findInsts(Function &F,
+                            SmallVectorImpl<AllocaInst *> &StaticAllocas,
+                            SmallVectorImpl<AllocaInst *> &DynamicAllocas,
+                            SmallVectorImpl<Argument *> &ByValArguments);
+
+  AllocaInst *
+  createStackRestorePoints(IRBuilder<> &IRB, Function &F,
+                                      Value *StaticTop, bool NeedDynamicTop);
+
+  void moveDynamicAllocasToUnsafeStack(
+      Function &F, AllocaInst *DynamicTop,
+      ArrayRef<AllocaInst *> DynamicAllocas);
+
+  Value *moveStaticAllocasToUnsafeStack(
+      IRBuilder<> &IRB, Function &F, ArrayRef<AllocaInst *> StaticAllocas,
+      ArrayRef<Argument *> ByValArguments);
 
   typedef DenseMap<Value *, Range> State;
 
