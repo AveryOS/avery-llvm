@@ -1015,7 +1015,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
       .addImm(DataStackSize)
       .setMIFlag(MachineInstr::FrameSetup);
     BuildMI(MBB, MBBI, DL, TII.get(X86::TEST8rm))
-      .addReg(X86::RAX)
+      .addReg(X86::AL)
       .addReg(X86::R12)
       .addImm(1)
       .addReg(0)

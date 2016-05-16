@@ -14,6 +14,7 @@ add_llvm_library(LLVMInstrumentation
   AveryAugmentArgs.cpp
   AveryMemMask.cpp
   AveryDataStack.cpp
+  AveryLoopMaskElimination.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms

@@ -36,127 +36,121 @@ using namespace llvm;
 
 #define DEBUG_TYPE "memmask"
 
-struct Range {
-  bool Unknown;
-  int64_t RelStart;
-  int64_t RelEnd;
+Avery::Range Avery::Range::top() {
+  Range r;
+  r.RelStart = INT64_MIN;
+  r.RelEnd = INT64_MAX;
+  r.Unknown = false;
+  return r;
+}
 
-  static Range top() {
-    Range r;
-    r.RelStart = INT64_MIN;
-    r.RelEnd = INT64_MAX;
-    r.Unknown = false;
-    return r;
+Avery::Range Avery::Range::unknown() {
+  Range r;
+  r.Unknown = true;
+  return r;
+}
+
+Avery::Range Avery::Range::exact() {
+  Range r;
+  r.Unknown = false;
+  r.RelStart = 0;
+  r.RelEnd = 0;
+  return r;
+}
+
+std::string Avery::Range::num(int64_t n) {
+  std::stringstream s;
+  if (n == INT64_MIN) {
+    s << "-∞";
+  } else if (n == INT64_MAX) {
+    s << "+∞";
+  } else {
+    s << n;
   }
+  return s.str();
+}
 
-  static Range unknown() {
-    Range r;
-    r.Unknown = true;
-    return r;
+bool Avery::Range::allowed() {
+  if (Unknown) {
+    return false;
+  } else {
+    return (RelStart > -512 && RelStart <= 0) && (RelEnd < 512 && RelEnd >= 0);
   }
+}
 
-  static Range exact() {
-    Range r;
-    r.Unknown = false;
-    r.RelStart = 0;
-    r.RelEnd = 0;
-    return r;
-  }
-
-  static std::string num(int64_t n) {
+std::string Avery::Range::str() {
+  if (Unknown) {
+    return "⊥";
+  } else {
     std::stringstream s;
-    if (n == INT64_MIN) {
-      s << "-∞";
-    } else if (n == INT64_MAX) {
-      s << "+∞";
-    } else {
-      s << n;
-    }
+    s << "[" << num(RelStart) << ", " << num(RelEnd) << "]";
     return s.str();
   }
+}
 
-  bool allowed() {
-    if (Unknown) {
-      return false;
-    } else {
-      return (RelStart > -512 && RelStart <= 0) && (RelEnd < 512 && RelEnd >= 0);
-    }
+int64_t Avery::Range::offset(int64_t base, int64_t offset) {
+  // base - offset where base is RelStart should return -INF if oob
+  // base + offset where base is RelEnd should return INF if oob
+
+  if (base == INT64_MIN || base == INT64_MAX) {
+    return base;
   }
 
-  std::string str() {
-    if (Unknown) {
-      return "⊥";
-    } else {
-      std::stringstream s;
-      s << "[" << num(RelStart) << ", " << num(RelEnd) << "]";
-      return s.str();
-    }
+  const int64_t bound = 20000;
+
+  if (offset > bound) {
+    return INT64_MAX;
+  }
+  if (offset < -bound) {
+    return INT64_MIN;
   }
 
-  static int64_t offset(int64_t base, int64_t offset) {
-    // base - offset where base is RelStart should return -INF if oob
-    // base + offset where base is RelEnd should return INF if oob
+  int64_t n = base + offset;
 
-    if (base == INT64_MIN || base == INT64_MAX) {
-      return base;
-    }
-
-    const int64_t bound = 20000;
-
-    if (offset > bound) {
-      return INT64_MAX;
-    }
-    if (offset < -bound) {
-      return INT64_MIN;
-    }
-
-    int64_t n = base + offset;
-
-    if (n < -bound) {
-      return INT64_MIN;
-    }
-
-    if (n > bound) {
-      return INT64_MAX;
-    }
-    if (n < -bound) {
-      return INT64_MIN;
-    }
-
-    return n;
+  if (n < -bound) {
+    return INT64_MIN;
   }
 
-  Range offset(int64_t o) const {
-    Range r = *this;
+  if (n > bound) {
+    return INT64_MAX;
+  }
+  if (n < -bound) {
+    return INT64_MIN;
+  }
 
-    if (o == 0)
-      return r;
+  return n;
+}
 
-    r.RelStart = offset(r.RelStart, o);
-    r.RelEnd = offset(r.RelEnd, o);
+Avery::Range Avery::Range::offset(int64_t o) const {
+  Range r = *this;
+
+  if (o == 0)
     return r;
+
+  r.RelStart = offset(r.RelStart, o);
+  r.RelEnd = offset(r.RelEnd, o);
+  return r;
+}
+
+Avery::Range Avery::Range::widen(Range old) {
+  Range r = old;
+
+  if (old.Unknown) {
+    return *this;
   }
 
-  Range widen(Range old) {
-    Range r = old;
-
-    if (old.Unknown) {
-      return *this;
-    }
-
-    if (RelStart < old.RelStart) {
-      r.RelStart = INT64_MIN;
-    }
-
-    if (RelEnd > old.RelEnd) {
-      r.RelEnd = INT64_MAX;
-    }
-
-    return r;
+  if (RelStart < old.RelStart) {
+    r.RelStart = INT64_MIN;
   }
-};
 
-bool operator!=(const Range& lhs, const Range& rhs) {
+  if (RelEnd > old.RelEnd) {
+    r.RelEnd = INT64_MAX;
+  }
+
+  return r;
+}
+
+bool llvm::operator!=(const Avery::Range& lhs, const Avery::Range& rhs) {
   if (lhs.Unknown != rhs.Unknown)
     return true;
   if (lhs.Unknown)
@@ -164,29 +158,29 @@ bool operator!=(const Range& lhs, const Range& rhs) {
   return lhs.RelStart != rhs.RelStart || lhs.RelEnd != rhs.RelEnd;
 }
 
-Range GetRange(const MemMask::State &S, Value *V) {
+Avery::Range GetRange(const Avery::State &S, Value *V) {
    auto it = S.find(V);
    if (it == S.end()) {
-     return Range::top();
+     return Avery::Range::top();
    } else {
      return (*it).getSecond();
    }
 }
 
-Range JoinRange(const Range &A, const Range &B) {
+Avery::Range JoinRange(const Avery::Range &A, const Avery::Range &B) {
   if (A.Unknown) {
     return B;
   }
   if (B.Unknown) {
     return A;
   }
-  Range r = A;
+  Avery::Range r = A;
   r.RelStart = std::min(A.RelStart, B.RelStart);
   r.RelEnd = std::max(A.RelEnd, B.RelEnd);
   return r;
 }
 
-void MemMask::ExecuteI(State &R, Instruction *I, bool Widen) {
+void Avery::ExecuteI(State &R, Instruction *I, bool Widen) {
   if (auto C = dyn_cast<CastInst>(I)) {
     if (C->isNoopCast(*DL)) {
       R[C] = GetRange(R, C->getOperand(0));
@@ -224,19 +218,19 @@ void MemMask::ExecuteI(State &R, Instruction *I, bool Widen) {
   }
 }
 
-void MemMask::ExecuteB(State &State, BasicBlock *BB, bool Widen) {
+void Avery::ExecuteB(Avery::State &State, BasicBlock *BB, bool Widen) {
   for (auto &I: *BB) {
     ExecuteI(State, &I, Widen);
   }
 }
 
-void MemMask::Join(MemMask::State &A, MemMask::State &B) {
+void Avery::Join(Avery::State &A, Avery::State &B) {
   for (auto &v: A) {
     v.getSecond() = JoinRange(v.getSecond(), B[v.getFirst()]);
   }
 }
 
-bool Diff(MemMask::State &A, MemMask::State &B) {
+bool Diff(Avery::State &A, Avery::State &B) {
   for (auto &v: A) {
     if (v.getSecond() != B[v.getFirst()])
       return true;
@@ -244,7 +238,7 @@ bool Diff(MemMask::State &A, MemMask::State &B) {
   return false;
 }
 
-void Dump(MemMask::State S) {
+void Dump(Avery::State S) {
   for (auto &v: S) {
     if (v.getFirst()->hasName()) {
       llvm::errs() << "  %" << v.getFirst()->getName() << " has value " << v.getSecond().str() << "\n";
@@ -269,8 +263,6 @@ bool Avery::eliminateMasks(Function &F, DenseSet<Value *> &prot) {
   LoopInfo *LI = &getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
 
   DenseMap<Value *, Value *> checks;
-
-  return true;
 
   if (LI->empty())
     return true;

@@ -194,7 +194,6 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   for (AllocaInst *AI : StaticAllocas) {
     IRB.SetInsertPoint(AI);
 
-    llvm::errs() << "Testing3aa\n";
     Type *Ty = AI->getAllocatedType();
     uint64_t Size = getStaticAllocaAllocationSize(AI);
     if (Size == 0)
@@ -205,22 +204,17 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
     unsigned Align =
         std::max((unsigned)DL->getPrefTypeAlignment(Ty), AI->getAlignment());
 
-    llvm::errs() << "Testing3a1\n" << BasePointer << "\n";
     Value *Off = IRB.CreateGEP(BasePointer, // BasePointer is i8*
                                ConstantInt::get(Int32Ty, StaticOffset));
-    llvm::errs() << "Testing3a2\n";
     Value *NewAI = IRB.CreateBitCast(Off, AI->getType(), AI->getName());
-    llvm::errs() << "Testing3a3\n";
     if (AI->hasName() && isa<Instruction>(NewAI))
       cast<Instruction>(NewAI)->takeName(AI);
 
-    llvm::errs() << "Testing3b\n";
     // Replace alloc with the new location.
     replaceDbgDeclareForAlloca(AI, BasePointer, DIB, /*Deref=*/true, StaticOffset);
     AI->replaceAllUsesWith(NewAI);
     AI->eraseFromParent();
 
-    llvm::errs() << "Testing3c\n";
     // Add alignment.
     // NOTE: we ensure that BasePointer itself is aligned to >= Align.
     StaticOffset += Size;
@@ -233,7 +227,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   StaticOffset = RoundUpToAlignment(StaticOffset, StackAlignment);
 
   F.addFnAttr("data-stack-size", std::to_string(StaticOffset));
-    llvm::errs() << "Testing4\n";
+
   IRB.SetInsertPoint(IP);
 
   return BasePointer;
@@ -243,6 +237,10 @@ void Avery::moveDynamicAllocasToUnsafeStack(
     Function &F, AllocaInst *DynamicTop,
     ArrayRef<AllocaInst *> DynamicAllocas) {
   DIBuilder DIB(*F.getParent());
+
+  if (DynamicAllocas.empty()) {
+    return;
+  }
 
   report_fatal_error("Dynamic allocas not supported");
   /*
@@ -285,27 +283,25 @@ void Avery::moveDynamicAllocasToUnsafeStack(
     AI->eraseFromParent();
   }
 
-  if (!DynamicAllocas.empty()) {
-    // Now go through the instructions again, replacing stacksave/stackrestore.
-    for (inst_iterator It = inst_begin(&F), Ie = inst_end(&F); It != Ie;) {
-      Instruction *I = &*(It++);
-      auto II = dyn_cast<IntrinsicInst>(I);
-      if (!II)
-        continue;
+  // Now go through the instructions again, replacing stacksave/stackrestore.
+  for (inst_iterator It = inst_begin(&F), Ie = inst_end(&F); It != Ie;) {
+    Instruction *I = &*(It++);
+    auto II = dyn_cast<IntrinsicInst>(I);
+    if (!II)
+      continue;
 
-      if (II->getIntrinsicID() == Intrinsic::stacksave) {
-        IRBuilder<> IRB(II);
-        Instruction *LI = IRB.CreateLoad(UnsafeStackPtr);
-        LI->takeName(II);
-        II->replaceAllUsesWith(LI);
-        II->eraseFromParent();
-      } else if (II->getIntrinsicID() == Intrinsic::stackrestore) {
-        IRBuilder<> IRB(II);
-        Instruction *SI = IRB.CreateStore(II->getArgOperand(0), UnsafeStackPtr);
-        SI->takeName(II);
-        assert(II->use_empty());
-        II->eraseFromParent();
-      }
+    if (II->getIntrinsicID() == Intrinsic::stacksave) {
+      IRBuilder<> IRB(II);
+      Instruction *LI = IRB.CreateLoad(UnsafeStackPtr);
+      LI->takeName(II);
+      II->replaceAllUsesWith(LI);
+      II->eraseFromParent();
+    } else if (II->getIntrinsicID() == Intrinsic::stackrestore) {
+      IRBuilder<> IRB(II);
+      Instruction *SI = IRB.CreateStore(II->getArgOperand(0), UnsafeStackPtr);
+      SI->takeName(II);
+      assert(II->use_empty());
+      II->eraseFromParent();
     }
   }*/
 }

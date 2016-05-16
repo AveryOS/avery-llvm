@@ -41,14 +41,33 @@ class Avery : public ModulePass {
     AU.addRequired<LoopInfoWrapperPass>();
   }
 
- private:
-  struct Range;
+  struct Range {
+    bool Unknown;
+    int64_t RelStart;
+    int64_t RelEnd;
 
+    static Range top();
+    static Range unknown();
+    static Range exact();
+
+    static std::string num(int64_t n);
+    bool allowed();
+    std::string str();
+    static int64_t offset(int64_t base, int64_t offset);
+    Range offset(int64_t o) const;
+    Range widen(Range old);
+  };
+
+  typedef DenseMap<Value *, Range> State;
+
+
+ private:
   Function *Func;
   Type *Int32Ty;
   Type *IntPtrTy;
   Type *StackPtrTy;
   const DataLayout *DL;
+  Value *Mask;
   Value *UnsafeStackPtr = nullptr;
 
   void augmentArgs(Module &M);
@@ -74,8 +93,6 @@ class Avery : public ModulePass {
       IRBuilder<> &IRB, Function &F, ArrayRef<AllocaInst *> StaticAllocas,
       ArrayRef<Argument *> ByValArguments);
 
-  typedef DenseMap<Value *, Range> State;
-
   void ExecuteI(State &R, Instruction *I, bool Widen);
   void ExecuteB(State &InState, BasicBlock *BB, bool Widen);
   void Join(State &A, State &B);
@@ -85,5 +102,8 @@ class Avery : public ModulePass {
   void protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask);
   Value *protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset);
 };
+
+
+bool operator!=(const Avery::Range& lhs, const Avery::Range& rhs);
 
 } // end namespace llvm
