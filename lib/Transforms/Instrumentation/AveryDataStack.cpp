@@ -119,7 +119,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   Value *BasePointer = &*args;
   assert(BasePointer->getType() == StackPtrTy);
 
-  auto IP = &*IRB.GetInsertPoint();
+  auto IP = IRB.saveIP();
 
   if (StaticAllocas.empty() && ByValArguments.empty())
     return BasePointer;
@@ -162,6 +162,8 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   int64_t StaticOffset = 0; // Current stack top.
 
   for (Argument *Arg : ByValArguments) {
+    IRB.restoreIP(IP);
+
     Type *Ty = Arg->getType()->getPointerElementType();
 
     uint64_t Size = DL->getTypeStoreSize(Ty);
@@ -178,7 +180,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
                                      Arg->getName() + ".unsafe-byval");
 
     // Replace alloc with the new location.
-    replaceDbgDeclare(Arg, BasePointer, IP, DIB,
+    replaceDbgDeclare(Arg, BasePointer, &*IRB.GetInsertPoint(), DIB,
                       /*Deref=*/true, StaticOffset);
     Arg->replaceAllUsesWith(NewArg);
     IRB.SetInsertPoint(cast<Instruction>(NewArg)->getNextNode());
@@ -199,7 +201,6 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
     if (Size == 0)
       Size = 1; // Don't create zero-sized stack objects.
 
-    llvm::errs() << "Testing3a\n";
     // Ensure the object is properly aligned.
     unsigned Align =
         std::max((unsigned)DL->getPrefTypeAlignment(Ty), AI->getAlignment());
@@ -228,7 +229,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
 
   F.addFnAttr("data-stack-size", std::to_string(StaticOffset));
 
-  IRB.SetInsertPoint(IP);
+  IRB.restoreIP(IP);
 
   return BasePointer;
 }
