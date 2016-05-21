@@ -50,8 +50,8 @@ bool Avery::runOnModule(Module &M) {
 
   for (auto Iter = M.begin(), E = M.end(); Iter != E; ) {
     Function &F = *(Iter++);
-    memMask(F);
     splitStacks(F);
+    memMask(F);
   }
 
   return true;

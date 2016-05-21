@@ -2088,6 +2088,14 @@ SDValue X86TargetLowering::getPICJumpTableRelocBase(SDValue Table,
   return Table;
 }
 
+unsigned X86TargetLowering::getLibcallAddressSpace() const {
+  if (Subtarget->isTargetAvery()) {
+    return 256;
+  } else {
+    return 0;
+  }
+}
+
 /// This returns the relocation base for the given PIC jumptable,
 /// the same as getPICJumpTableRelocBase, but as an MCExpr.
 const MCExpr *X86TargetLowering::

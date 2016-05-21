@@ -2043,6 +2043,10 @@ public:
   /// NOTE: The TargetMachine owns TLOF.
   explicit TargetLowering(const TargetMachine &TM);
 
+  virtual unsigned getLibcallAddressSpace() const {
+    return 0;
+  }
+
   /// Returns true by value, base pointer and offset pointer and addressing mode
   /// by reference if the node's address can be legally represented as
   /// pre-indexed load / store address.

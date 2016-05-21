@@ -255,6 +255,22 @@ void Avery::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
             protectValue(F, prot, RI->getOperandUse(0), Mask, false);
       } else if (dyn_cast<FenceInst>(I)) {
       } else if (dyn_cast<InvokeInst>(I)) {
+      } else if (auto MI = dyn_cast<MemIntrinsic>(I)) {
+        protectValueAndSeg(F, prot, MI, 0, Mask);
+        Type *Tys[] = { MI->getRawDest()->getType(), nullptr, nullptr };
+        ArrayRef<Type *> Args;
+        if (auto MTI = dyn_cast<MemTransferInst>(MI)) {
+          protectValueAndSeg(F, prot, MI, 1, Mask);
+          Tys[1] = MTI->getRawSource()->getType();
+          Tys[2] = MI->getLength()->getType();
+          Args = ArrayRef<Type *>(Tys, 3);
+        } else {
+          Tys[1] = MI->getLength()->getType();
+          Args = ArrayRef<Type *>(Tys, 2);
+        }
+        auto NewFn = Intrinsic::getDeclaration(F.getParent(), MI->getIntrinsicID(), Args);
+        MI->mutateFunctionType(dyn_cast<FunctionType>(NewFn->getType()->getElementType()));
+        MI->setCalledFunction(NewFn);
       } else if (dyn_cast<CallInst>(I)) {
        /* for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
           auto Arg = CI->getArgOperand(i); //getArgOperandUse

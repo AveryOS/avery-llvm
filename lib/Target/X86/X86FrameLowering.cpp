@@ -1010,17 +1010,17 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   unsigned DataStackSize = getDataStackSize(Fn);
 
   if (DataStackSize) {
-    BuildMI(MBB, MBBI, DL, TII.get(getSUBriOpcode(true, DataStackSize)), X86::R12)
-      .addReg(X86::R12)
+    BuildMI(MBB, MBBI, DL, TII.get(getSUBriOpcode(true, DataStackSize)), X86::RBX)
+      .addReg(X86::RBX)
       .addImm(DataStackSize)
       .setMIFlag(MachineInstr::FrameSetup);
     BuildMI(MBB, MBBI, DL, TII.get(X86::TEST8rm))
       .addReg(X86::AL, RegState::Undef)
-      .addReg(X86::R12)
+      .addReg(X86::RBX)
       .addImm(1)
       .addReg(0)
       .addImm(0)
-      .addReg(0)
+      .addReg(X86::GS)
       .setMIFlag(MachineInstr::FrameSetup);
   }
 
@@ -1629,8 +1629,8 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   unsigned DataStackSize = getDataStackSize(MF.getFunction());
 
   if (DataStackSize) {
-    BuildMI(MBB, MBBI, DL, TII.get(getADDriOpcode(true, DataStackSize)), X86::R12)
-      .addReg(X86::R12)
+    BuildMI(MBB, MBBI, DL, TII.get(getADDriOpcode(true, DataStackSize)), X86::RBX)
+      .addReg(X86::RBX)
       .addImm(DataStackSize)
       .setMIFlag(MachineInstr::FrameDestroy);
   }
