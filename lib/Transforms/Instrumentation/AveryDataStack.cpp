@@ -93,10 +93,12 @@ void Avery::findInsts(Function &F,
 }
 
 AllocaInst *
-Avery::createStackRestorePoints(IRBuilder<> &IRB, Function &F,
+Avery::createStackRestorePoints(Function &F,
                                     Value *StaticTop, bool NeedDynamicTop) {
   // We need the current value of the shadow stack pointer to restore
   // after longjmp or exception catching.
+
+  IRBuilder<> IRB(&F.front(), F.begin()->getFirstInsertionPt());
 
   AllocaInst *DynamicTop = nullptr;
   if (NeedDynamicTop)
@@ -112,17 +114,16 @@ Avery::createStackRestorePoints(IRBuilder<> &IRB, Function &F,
 }
 
 Value *Avery::moveStaticAllocasToUnsafeStack(
-    IRBuilder<> &IRB, Function &F, ArrayRef<AllocaInst *> StaticAllocas,
+    Function &F, ArrayRef<AllocaInst *> StaticAllocas,
     ArrayRef<Argument *> ByValArguments) {
   auto args = F.arg_begin();
   args++;
   Value *BasePointer = &*args;
   assert(BasePointer->getType() == StackPtrTy);
 
-  auto IP = IRB.saveIP();
-
   if (StaticAllocas.empty() && ByValArguments.empty())
     return BasePointer;
+
 
   DIBuilder DIB(*F.getParent());
 
@@ -162,7 +163,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   int64_t StaticOffset = 0; // Current stack top.
 
   for (Argument *Arg : ByValArguments) {
-    IRB.restoreIP(IP);
+    IRBuilder<> IRB(&F.front(), F.begin()->getFirstInsertionPt());
 
     Type *Ty = Arg->getType()->getPointerElementType();
 
@@ -194,7 +195,7 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
 
   // Allocate space for every unsafe static AllocaInst on the unsafe stack.
   for (AllocaInst *AI : StaticAllocas) {
-    IRB.SetInsertPoint(AI);
+    IRBuilder<> IRB(AI);
 
     Type *Ty = AI->getAllocatedType();
     uint64_t Size = getStaticAllocaAllocationSize(AI);
@@ -228,8 +229,6 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
   StaticOffset = RoundUpToAlignment(StaticOffset, StackAlignment);
 
   F.addFnAttr("data-stack-size", std::to_string(StaticOffset));
-
-  IRB.restoreIP(IP);
 
   return BasePointer;
 }
@@ -326,10 +325,8 @@ void Avery::splitStacks(Function &F) {
       ByValArguments.empty())
     return; // Nothing to do in this function.
 
-  IRBuilder<> IRB(&F.front(), F.begin()->getFirstInsertionPt());
-
   // The top of the unsafe stack after all unsafe static allocas are allocated.
-  Value *StaticTop = moveStaticAllocasToUnsafeStack(IRB, F, StaticAllocas,
+  Value *StaticTop = moveStaticAllocasToUnsafeStack(F, StaticAllocas,
                                                     ByValArguments);
 
   // Safe stack object that stores the current unsafe stack top. It is updated
@@ -339,7 +336,7 @@ void Avery::splitStacks(Function &F) {
   // FIXME: a better alternative might be to store the unsafe stack pointer
   // before setjmp / invoke instructions.
   AllocaInst *DynamicTop = createStackRestorePoints(
-      IRB, F, StaticTop, !DynamicAllocas.empty());
+      F, StaticTop, !DynamicAllocas.empty());
 
   // Handle dynamic allocas.
   moveDynamicAllocasToUnsafeStack(F, DynamicTop,

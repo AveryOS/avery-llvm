@@ -38,8 +38,13 @@ using namespace llvm;
 #define DEBUG_TYPE "avery"
 
 bool Avery::runOnModule(Module &M) {
-  if (Triple(M.getTargetTriple()).getOS() != Triple::OSType::Avery)
+  Triple triple(M.getTargetTriple());
+
+  if (triple.getOS() != Triple::OSType::Avery)
     return false;
+
+  if (triple.getArch() != Triple::ArchType::x86_64)
+    llvm_unreachable("Avery is only supported on x86_64");
 
   DL = &M.getDataLayout();
   StackPtrTy = Type::getInt8PtrTy(M.getContext());
