@@ -82,7 +82,7 @@ class Avery : public ModulePass {
                             SmallVectorImpl<Argument *> &ByValArguments);
 
   AllocaInst *
-  createStackRestorePoints(IRBuilder<> &IRB, Function &F,
+  createStackRestorePoints(Function &F,
                                       Value *StaticTop, bool NeedDynamicTop);
 
   void moveDynamicAllocasToUnsafeStack(
@@ -90,7 +90,7 @@ class Avery : public ModulePass {
       ArrayRef<AllocaInst *> DynamicAllocas);
 
   Value *moveStaticAllocasToUnsafeStack(
-      IRBuilder<> &IRB, Function &F, ArrayRef<AllocaInst *> StaticAllocas,
+      Function &F, ArrayRef<AllocaInst *> StaticAllocas,
       ArrayRef<Argument *> ByValArguments);
 
   void ExecuteI(State &R, Instruction *I, bool Widen);
