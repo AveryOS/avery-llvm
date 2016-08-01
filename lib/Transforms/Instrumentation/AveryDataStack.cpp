@@ -117,7 +117,6 @@ Value *Avery::moveStaticAllocasToUnsafeStack(
     Function &F, ArrayRef<AllocaInst *> StaticAllocas,
     ArrayRef<Argument *> ByValArguments) {
   auto args = F.arg_begin();
-  args++;
   Value *BasePointer = &*args;
   assert(BasePointer->getType() == StackPtrTy);
 

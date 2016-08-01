@@ -145,7 +145,9 @@ void UpdateConstantUse(Function &F, Constant *C, Value *From, Value *To) {
 */
 Value *Avery::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Value *Mask, bool CanOffset) {
   IRBuilder<> IRB(&F.getEntryBlock());
-  IRB.SetInsertPoint(&F.getEntryBlock(), F.getEntryBlock().begin());
+  auto it = F.getEntryBlock().begin();
+  ++it; // Skip Mask inline assembly
+  IRB.SetInsertPoint(&F.getEntryBlock(), it);
 
   Value *Ptr = PtrUse.get();
   Value *Target;
@@ -289,7 +291,12 @@ void Avery::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
 }
 
 void Avery::memMask(Function &F) {
-  Value *Mask = &*F.arg_begin();
+  if (F.empty()) {
+    return;
+  }
+  IRBuilder<> IRB(&F.front(), F.begin()->getFirstInsertionPt());
+  auto Asm = InlineAsm::get(FunctionType::get(IntPtrTy, false), "", "={r15}", false, false, InlineAsm::AD_Intel);
+  Value *Mask = IRB.CreateCall(Asm);
 
   DenseSet<Value *> prot;
 

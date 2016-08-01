@@ -57,7 +57,7 @@ Function *RecreateFunction(Function *Func, FunctionType *NewType) {
 
   // We need to recreate the attribute set, with the right indexes
   unsigned NumArgs = Func->arg_size();
-  for (unsigned i = 1, j = 3; i < NumArgs+1; i++, j++) {
+  for (unsigned i = 1, j = 2; i < NumArgs+1; i++, j++) {
     if (!Attrs.hasAttributes(i)) continue;
     AttributeSet ParamAttrs = Attrs.getParamAttributes(i);
     AttrBuilder AB;
@@ -93,7 +93,6 @@ void Avery::augmentArgs(Module &M) {
 */
 
     SmallVector<Type *, 8> ArgTypes;
-    ArgTypes.push_back(IntPtrTy);
     ArgTypes.push_back(StackPtrTy);
     for (auto Type : F.getFunctionType()->params()) {
       ArgTypes.push_back(Type);
@@ -108,14 +107,11 @@ void Avery::augmentArgs(Module &M) {
     Attrs.addAttribute("no-frame-pointer-elim-non-leaf");
 
     auto AS = NF.getAttributes().removeAttributes(M.getContext(), AttributeSet::FunctionIndex, Attrs);
+    AS = AS.removeAttribute(F.getContext(), 2, Attribute::StructRet);
     AS = AS.removeAttribute(F.getContext(), 3, Attribute::StructRet);
-    AS = AS.removeAttribute(F.getContext(), 4, Attribute::StructRet);
     NF.setAttributes(AS);
 
     auto NewArg = NF.arg_begin();
-    NewArg->setName("Mask");
-    Value *Mask = &*NewArg;
-    ++NewArg;
     NewArg->setName("Stack");
     Value *Stack = &*NewArg;
     ++NewArg;
@@ -138,7 +134,6 @@ void Avery::augmentArgs(Module &M) {
               OldCall->getCalledValue()->getType()->getPointerElementType());
 
           SmallVector<Type *, 8> ArgTypes;
-          ArgTypes.push_back(IntPtrTy);
           ArgTypes.push_back(StackPtrTy);
           for (auto Type : CallFTy->params()) {
             ArgTypes.push_back(Type);
@@ -146,7 +141,6 @@ void Avery::augmentArgs(Module &M) {
           auto NCallFTy = FunctionType::get(CallFTy->getReturnType(), ArgTypes, CallFTy->isVarArg());
 
           SmallVector<Value *, 8> Args;
-          Args.push_back(Mask);
           Args.push_back(Stack);
           for (unsigned I = 0; I < OldCall->getNumArgOperands(); ++I) {
             Value *Arg = OldCall->getArgOperand(I);
@@ -197,7 +191,6 @@ void Avery::augmentArgs(Module &M) {
               OldCall->getCalledValue()->getType()->getPointerElementType());
 
           SmallVector<Type *, 8> ArgTypes;
-          ArgTypes.push_back(IntPtrTy);
           ArgTypes.push_back(StackPtrTy);
           for (auto Type : CallFTy->params()) {
             ArgTypes.push_back(Type);
@@ -205,7 +198,6 @@ void Avery::augmentArgs(Module &M) {
           auto NCallFTy = FunctionType::get(CallFTy->getReturnType(), ArgTypes, CallFTy->isVarArg());
 
           SmallVector<Value *, 8> Args;
-          Args.push_back(Mask);
           Args.push_back(Stack);
           for (unsigned I = 0; I < OldCall->getNumArgOperands(); ++I) {
             Value *Arg = OldCall->getArgOperand(I);
