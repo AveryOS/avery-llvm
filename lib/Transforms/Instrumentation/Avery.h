@@ -37,7 +37,7 @@ class Avery : public ModulePass {
   static char ID;
   const char *getPassName() const override { return "Avery"; }
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  virtual void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<LoopInfoWrapperPass>();
   }
 

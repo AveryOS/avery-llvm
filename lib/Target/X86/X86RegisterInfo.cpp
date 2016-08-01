@@ -400,6 +400,7 @@ const uint32_t *X86RegisterInfo::getDarwinTLSCallPreservedMask() const {
 }
 
 BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
+  const X86Subtarget &Subtarget = MF.getSubtarget<X86Subtarget>();
   BitVector Reserved(getNumRegs());
   const X86FrameLowering *TFI = getFrameLowering(MF);
 
@@ -446,6 +447,11 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Mark the floating point stack registers as reserved.
   for (unsigned n = 0; n != 8; ++n)
     Reserved.set(X86::ST0 + n);
+
+  if (Subtarget.isTargetAvery()) {
+    for (MCRegAliasIterator AI(X86::R15, this, true); AI.isValid(); ++AI)
+      Reserved.set(*AI);
+  }
 
   // Reserve the registers that only exist in 64-bit mode.
   if (!Is64Bit) {

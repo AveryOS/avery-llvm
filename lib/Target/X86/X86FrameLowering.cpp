@@ -1014,14 +1014,6 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
       .addReg(X86::RBX)
       .addImm(DataStackSize)
       .setMIFlag(MachineInstr::FrameSetup);
-    BuildMI(MBB, MBBI, DL, TII.get(X86::TEST8rm))
-      .addReg(X86::AL, RegState::Undef)
-      .addReg(X86::RBX)
-      .addImm(1)
-      .addReg(0)
-      .addImm(0)
-      .addReg(0)
-      .setMIFlag(MachineInstr::FrameSetup);
   }
 
   if (HasFP) {
