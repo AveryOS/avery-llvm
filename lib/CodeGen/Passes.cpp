@@ -476,7 +476,11 @@ void TargetPassConfig::addCodeGenPrepare() {
 void TargetPassConfig::addISelPrepare() {
   addPreISel();
 
-  addPass(createAveryPass());
+  if (TM->getTargetTriple().getOS() == Triple::OSType::Avery) {
+    addPass(createExpandVarArgsPass());
+    addPass(createExpandByValPass());
+    addPass(createAveryPass());
+  }
 
   // Add both the safe stack and the stack protection passes: each of them will
   // only protect functions that have corresponding attributes.
