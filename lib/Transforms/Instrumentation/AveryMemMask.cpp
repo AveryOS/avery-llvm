@@ -116,6 +116,8 @@ bool Avery::safePtr(Value *I, DenseSet<Value *> &prot, SmallSet<Value *, 8> &phi
   } else if (isa<InvokeInst>(I)) {
     // We cannot insert protection instructions after an InvokeInst,
     // so we require that results are already protected.
+
+    // We can mask at the unwind location and the normal path however (how can we tell which is relevant here?)
     return true;
   } else if (isa<CallInst>(I)) {
     return true;

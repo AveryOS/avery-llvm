@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
@@ -26,9 +27,26 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Transforms/NaCl.h"
 
 using namespace llvm;
+
+static Function *RecreateFunction(Function *Func, FunctionType *NewType) {
+  Function *NewFunc = Function::Create(NewType, Func->getLinkage());
+  NewFunc->copyAttributesFrom(Func);
+  Func->getParent()->getFunctionList().insert(Module::FunctionListType::iterator(Func), NewFunc);
+  NewFunc->takeName(Func);
+  NewFunc->getBasicBlockList().splice(NewFunc->begin(),
+                                      Func->getBasicBlockList());
+
+  if (Func->hasPersonalityFn()) {
+    NewFunc->setPersonalityFn(Func->getPersonalityFn());
+  }
+
+  Func->replaceAllUsesWith(
+      ConstantExpr::getBitCast(NewFunc,
+                               Func->getFunctionType()->getPointerTo()));
+  return NewFunc;
+}
 
 namespace {
 class ExpandVarArgs : public ModulePass {
@@ -63,7 +81,7 @@ static bool ExpandVarArgFunc(Module *M, Function *Func) {
   // Move the arguments across to the new function.
   auto NewArg = NewFunc->arg_begin();
   for (Argument &Arg : Func->args()) {
-    Arg.replaceAllUsesWith(NewArg);
+    Arg.replaceAllUsesWith(&*NewArg);
     NewArg->takeName(&Arg);
     ++NewArg;
   }
@@ -75,12 +93,12 @@ static bool ExpandVarArgFunc(Module *M, Function *Func) {
   // Expand out uses of llvm.va_start in this function.
   for (BasicBlock &BB : *NewFunc) {
     for (auto BI = BB.begin(), BE = BB.end(); BI != BE;) {
-      Instruction *I = BI++;
+      Instruction *I = &*(BI++);
       if (auto *VAS = dyn_cast<VAStartInst>(I)) {
         IRBuilder<> IRB(VAS);
         Value *Cast = IRB.CreateBitCast(VAS->getArgList(),
                                         PtrType->getPointerTo(), "arglist");
-        IRB.CreateStore(NewArg, Cast);
+        IRB.CreateStore(&*NewArg, Cast);
         VAS->eraseFromParent();
       }
     }
@@ -198,19 +216,19 @@ static bool ExpandVarArgCall(Module *M, InstType *Call, DataLayout *DL) {
   // Allocate space for the variable argument buffer.  Do this at the
   // start of the function so that we don't leak space if the function
   // is called in a loop.
-  IRBuilder<> IRB(F->getEntryBlock().getFirstInsertionPt());
+  IRBuilder<> IRB(&*F->getEntryBlock().getFirstInsertionPt());
   auto *Buf = IRB.CreateAlloca(VarArgsTy, nullptr, "vararg_buffer");
 
   // Call llvm.lifetime.start/end intrinsics to indicate that Buf is
   // only used for the duration of the function call, so that the
   // stack space can be reused elsewhere.
-  auto LifetimeStart = Intrinsic::getDeclaration(M, Intrinsic::lifetime_start);
+  /*auto LifetimeStart = Intrinsic::getDeclaration(M, Intrinsic::lifetime_start);
   auto LifetimeEnd = Intrinsic::getDeclaration(M, Intrinsic::lifetime_end);
   auto *I8Ptr = Type::getInt8Ty(Ctx)->getPointerTo();
   auto *BufPtr = IRB.CreateBitCast(Buf, I8Ptr, "vararg_lifetime_bitcast");
   auto *BufSize =
       ConstantInt::get(Ctx, APInt(64, DL->getTypeAllocSize(VarArgsTy)));
-  IRB.CreateCall2(LifetimeStart, BufSize, BufPtr);
+  IRB.CreateCall2(LifetimeStart, BufSize, BufPtr);*/
 
   // Copy variable arguments into buffer.
   int Index = 0;
@@ -246,15 +264,15 @@ static bool ExpandVarArgCall(Module *M, InstType *Call, DataLayout *DL) {
     auto *N = IRB.CreateCall(CastFunc, FixedArgs);
     N->setAttributes(AttributeSet::get(Ctx, Attrs));
     NewCall = N;
-    IRB.CreateCall2(LifetimeEnd, BufSize, BufPtr);
+    //IRB.CreateCall2(LifetimeEnd, BufSize, BufPtr);
   } else if (auto *C = dyn_cast<InvokeInst>(Call)) {
     auto *N = IRB.CreateInvoke(CastFunc, C->getNormalDest(), C->getUnwindDest(),
                                FixedArgs, C->getName());
     N->setAttributes(AttributeSet::get(Ctx, Attrs));
-    (IRBuilder<>(C->getNormalDest()->getFirstInsertionPt()))
+    /*(IRBuilder<>(C->getNormalDest()->getFirstInsertionPt()))
         .CreateCall2(LifetimeEnd, BufSize, BufPtr);
     (IRBuilder<>(C->getUnwindDest()->getFirstInsertionPt()))
-        .CreateCall2(LifetimeEnd, BufSize, BufPtr);
+        .CreateCall2(LifetimeEnd, BufSize, BufPtr);*/
     NewCall = N;
   } else {
     llvm_unreachable("not a call/invoke");
@@ -272,10 +290,10 @@ bool ExpandVarArgs::runOnModule(Module &M) {
   DataLayout DL(&M);
 
   for (auto MI = M.begin(), ME = M.end(); MI != ME;) {
-    Function *F = MI++;
+    Function *F = &*(MI++);
     for (BasicBlock &BB : *F) {
       for (auto BI = BB.begin(), BE = BB.end(); BI != BE;) {
-        Instruction *I = BI++;
+        Instruction *I = &*(BI++);
         if (auto *VI = dyn_cast<VAArgInst>(I)) {
           Changed = true;
           ExpandVAArgInst(VI, &DL);
