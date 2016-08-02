@@ -173,6 +173,8 @@ static inline uint32_t scaleBranchCount(uint64_t Count, uint64_t Scale) {
 }
 
 ModulePass *createAveryPass();
+ModulePass *createExpandVarArgsPass();
+ModulePass *createExpandByValPass();
 
 } // End llvm namespace
 

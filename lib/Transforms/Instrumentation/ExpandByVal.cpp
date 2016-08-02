@@ -36,6 +36,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -43,7 +44,6 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Transforms/NaCl.h"
 
 using namespace llvm;
 
@@ -153,12 +153,12 @@ static bool ExpandCall(DataLayout *DL, InstType *Call) {
       // Mark the argument copy as unused using llvm.lifetime.end.
       if (isa<CallInst>(Call)) {
         BasicBlock::iterator It = BasicBlock::iterator(Call);
-        Builder.SetInsertPoint(++It);
+        Builder.SetInsertPoint(&*(++It));
         Builder.CreateLifetimeEnd(CopyBuf, ArgSize);
       } else if (InvokeInst *Invoke = dyn_cast<InvokeInst>(Call)) {
-        Builder.SetInsertPoint(Invoke->getNormalDest()->getFirstInsertionPt());
+        Builder.SetInsertPoint(&*Invoke->getNormalDest()->getFirstInsertionPt());
         Builder.CreateLifetimeEnd(CopyBuf, ArgSize);
-        Builder.SetInsertPoint(Invoke->getUnwindDest()->getFirstInsertionPt());
+        Builder.SetInsertPoint(&*Invoke->getUnwindDest()->getFirstInsertionPt());
         Builder.CreateLifetimeEnd(CopyBuf, ArgSize);
       }
     }
