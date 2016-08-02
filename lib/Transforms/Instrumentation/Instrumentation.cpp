@@ -69,6 +69,8 @@ void llvm::initializeInstrumentation(PassRegistry &Registry) {
   initializeDataFlowSanitizerPass(Registry);
   initializeSafeStackPass(Registry);
   initializeAveryPass(Registry);
+  initializeExpandByValPass(Registry);
+  initializeExpandVarArgsPass(Registry);
 }
 
 /// LLVMInitializeInstrumentation - C binding for

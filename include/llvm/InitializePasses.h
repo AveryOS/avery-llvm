@@ -246,6 +246,8 @@ void initializeReversePostOrderFunctionAttrsPass(PassRegistry&);
 void initializeRewriteStatepointsForGCPass(PassRegistry&);
 void initializeSafeStackPass(PassRegistry&);
 void initializeAveryPass(PassRegistry&);
+void initializeExpandByValPass(PassRegistry&);
+void initializeExpandVarArgsPass(PassRegistry&);
 void initializeSCCPPass(PassRegistry&);
 void initializeSROALegacyPassPass(PassRegistry&);
 void initializeSROA_DTPass(PassRegistry&);
