@@ -234,11 +234,6 @@ Value *Avery::protectValue(Function &F, DenseSet<Value *> &prot, Use &PtrUse, Va
 
 void Avery::protectValueAndSeg(Function &F, DenseSet<Value *> &prot, Instruction *I, unsigned PtrOp, Value *Mask) {
   protectValue(F, prot, I->getOperandUse(PtrOp), Mask, true);
-  IRBuilder<> IRB(I);
-  auto SegPtrVal = IRB.CreatePtrToInt(I->getOperand(PtrOp), IntPtrTy);
-  auto SegPtr = IRB.CreateIntToPtr(SegPtrVal, I->getOperand(PtrOp)->getType()->getPointerElementType()->getPointerTo(256));
-  //auto SegPtr = IRB.CreateAddrSpaceCast(I->getOperand(PtrOp), I->getOperand(PtrOp)->getType()->getPointerElementType()->getPointerTo(256)); //CRASHES
-  I->setOperand(PtrOp, SegPtr);
 }
 
 void Avery::protectFunction(Function &F, DenseSet<Value *> &prot, Value *Mask) {
